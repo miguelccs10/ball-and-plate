@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C / STM32 Build Artifacts
+build/
+dist/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE & OS Artifacts
+.DS_Store
+*.swp
+*~

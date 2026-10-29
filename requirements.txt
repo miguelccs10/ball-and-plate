@@ -1,0 +1,9 @@
+# Dependências do Sistema Ball and Plate 3-DoF (Raspberry Pi 3 e Ambiente de Simulação)
+numpy>=1.21.0
+opencv-python-headless>=4.5.5.64
+pyserial>=3.5
+pigpio>=1.78
+
+# Opcionais (apenas se for exportar ou executar YOLO via ONNX Runtime no RPi):
+# onnxruntime>=1.12.0
+# ultralytics>=8.0.0

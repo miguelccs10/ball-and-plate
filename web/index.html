@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plataforma Auto Balanceável 3-DoF | Estação de Controle e Sintonia</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+
+  <!-- HEADER SUPERIOR DE ALTO NÍVEL -->
+  <header class="app-header">
+    <div class="header-branding">
+      <div class="header-logo">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10" stroke="#00f0ff" stroke-width="2"/>
+          <circle cx="12" cy="12" r="4" fill="#00f0ff"/>
+          <line x1="12" y1="2" x2="12" y2="6" stroke="#2979ff"/>
+          <line x1="12" y1="18" x2="12" y2="22" stroke="#2979ff"/>
+          <line x1="2" y1="12" x2="6" y2="12" stroke="#2979ff"/>
+          <line x1="18" y1="12" x2="22" y2="12" stroke="#2979ff"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="header-title">Ball and Plate 3-DoF <span class="version-tag">v2.5 Pro</span></h1>
+        <p class="header-subtitle">UFG Mecatrônica &middot; Percepção Visual e Controle Multirate em Tempo Real</p>
+      </div>
+    </div>
+
+    <!-- SELETOR RÁPIDO DE ARQUITETURA DE HARDWARE (MODO DUPLO) -->
+    <div class="op-mode-selector">
+      <span class="selector-label">Arquitetura de Operação:</span>
+      <div class="mode-toggle-group">
+        <button class="mode-toggle-btn active" id="btn-op-standalone" onclick="setOpMode('STANDALONE_RPI')">
+          <span class="dot"></span>
+          <span>RPi 3 Standalone</span>
+        </button>
+        <button class="mode-toggle-btn" id="btn-op-hybrid" onclick="setOpMode('HYBRID_STM32')">
+          <span class="dot"></span>
+          <span>Híbrido RPi + STM32</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- BADGES DE STATUS DO SISTEMA -->
+    <div class="status-badges">
+      <div class="status-pill status-live" id="badge-pigpio">
+        <span class="status-indicator"></span>
+        <span id="badge-pigpio-txt">PIGPIO: ATIVO</span>
+      </div>
+      <div class="status-pill status-cyan" id="badge-detector">
+        <span class="status-indicator"></span>
+        <span id="badge-detector-txt">DETECTOR: HSV</span>
+      </div>
+      <div class="status-pill status-amber" id="badge-ctrl-mode">
+        <span class="status-indicator"></span>
+        <span id="badge-ctrl-mode-txt">MODO: MANUAL</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- CONTAINER PRINCIPAL -->
+  <main class="main-layout">
+
+    <!-- COLUNA DA ESQUERDA: VÍDEO MJPEG, HUD E OSCILOSCÓPIO EM TEMPO REAL -->
+    <section class="viewport-column">
+
+      <!-- CARD DE STREAM DE VÍDEO -->
+      <div class="card stream-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="icon">📹</span>
+            <span>Fluxo de Visão Computacional (320x240 @ 30 FPS)</span>
+          </div>
+          <div class="stream-badges">
+            <span class="pill-tag" id="hud-fps-pill">30.0 FPS</span>
+            <span class="pill-tag" id="hud-latency-pill">Latência: 30 ms</span>
+          </div>
+        </div>
+
+        <div class="video-container">
+          <img id="stream-img" src="/stream" alt="Aguardando Conexão de Vídeo..." loading="eager">
+          <div class="hud-overlay">
+            <div class="hud-item" id="hud-pos-display">X: +0.0 mm | Y: +0.0 mm</div>
+            <div class="hud-item" id="hud-vel-display">V: 0.0 mm/s</div>
+            <div class="hud-item" id="hud-status-display">STATUS: PROCURANDO</div>
+          </div>
+        </div>
+
+        <!-- BOTÕES DE AÇÃO RÁPIDA -->
+        <div class="quick-action-bar">
+          <button class="btn btn-emerald btn-lg" id="btn-mode-auto" onclick="setControlMode('AUTO')">
+            ▶ INICIAR BALANCEAMENTO AUTO
+          </button>
+          <button class="btn btn-amber" onclick="centerSetpoint()">
+            🎯 REINICIALIZAR SETPOINT (0, 0)
+          </button>
+          <button class="btn btn-rose" onclick="emergencyStop()">
+            ⏹ PARADA / NIVELAR (0°)
+          </button>
+        </div>
+      </div>
+
+      <!-- CARDS DE TELEMETRIA RÁPIDA (CARDS MÉTRICOS) -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-header">Posição X (mm)</div>
+          <div class="metric-value font-mono" id="tel-x">+0.0</div>
+          <div class="metric-sub font-mono" id="tel-vx">Vx: 0.0 mm/s</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-header">Posição Y (mm)</div>
+          <div class="metric-value font-mono" id="tel-y">+0.0</div>
+          <div class="metric-sub font-mono" id="tel-vy">Vy: 0.0 mm/s</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-header">Pitch Placa (α)</div>
+          <div class="metric-value font-mono text-cyan" id="tel-pitch">+0.00°</div>
+          <div class="metric-sub font-mono" id="tel-m1">M1: 0 passos</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-header">Roll Placa (β)</div>
+          <div class="metric-value font-mono text-cyan" id="tel-roll">+0.00°</div>
+          <div class="metric-sub font-mono" id="tel-m2-m3">M2: 0 | M3: 0</div>
+        </div>
+      </div>
+
+      <!-- CARD DO OSCILOSCÓPIO TEMPORAL EM TEMPO REAL -->
+      <div class="card oscilloscope-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="icon">📈</span>
+            <span>Osciloscópio de Resposta Dinâmica (Posição X/Y vs Setpoint)</span>
+          </div>
+          <div class="scope-legend">
+            <span class="legend-item"><span class="dot-legend" style="background:#00f0ff;"></span> X Real</span>
+            <span class="legend-item"><span class="dot-legend" style="background:#ffab00;"></span> X Setpoint</span>
+            <span class="legend-item"><span class="dot-legend" style="background:#00e676;"></span> Y Real</span>
+            <span class="legend-item"><span class="dot-legend" style="background:#ff3d71;"></span> Y Setpoint</span>
+          </div>
+        </div>
+        <div class="canvas-container">
+          <canvas id="scopeCanvas" width="580" height="150"></canvas>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- COLUNA DA DIREITA: ABAS DE SINTONIA FINA DE CONTROLE E VISÃO -->
+    <section class="tuning-column">
+      <div class="card tuning-card">
+
+        <!-- BARRA DE NAVEGAÇÃO ENTRE ABAS -->
+        <nav class="tabs-nav">
+          <button class="tab-nav-btn active" id="btn-tab-pid" onclick="switchTab('tab-pid')">
+            <span class="tab-icon">🎛️</span>
+            <span>PID & Kalman</span>
+          </button>
+          <button class="tab-nav-btn" id="btn-tab-vision" onclick="switchTab('tab-vision')">
+            <span class="tab-icon">🎨</span>
+            <span>Filtros de Visão</span>
+          </button>
+          <button class="tab-nav-btn" id="btn-tab-motors" onclick="switchTab('tab-motors')">
+            <span class="tab-icon">📐</span>
+            <span>Atuadores</span>
+          </button>
+          <button class="tab-nav-btn" id="btn-tab-roi" onclick="switchTab('tab-roi')">
+            <span class="tab-icon">✂️</span>
+            <span>Recorte ROI</span>
+          </button>
+          <button class="tab-nav-btn" id="btn-tab-hardware" onclick="switchTab('tab-hardware')">
+            <span class="tab-icon">🔌</span>
+            <span>Hardware & STM32</span>
+          </button>
+        </nav>
+
+        <!-- ================================================================ -->
+        <!-- ABA 1: SINTONIA FINA PID & FILTRO DE KALMAN                      -->
+        <!-- ================================================================ -->
+        <div class="tab-content active" id="tab-pid">
+          <div class="section-title-group">
+            <h3 class="section-heading">Ganhos do Controlador PID Discreto</h3>
+            <p class="section-subtext">Ajuste fino com slider contínuo ou entrada numérica direta:</p>
+          </div>
+
+          <!-- Presets Rápidos de Ganhos -->
+          <div class="preset-pill-row">
+            <span class="preset-label">Presets Rápidos:</span>
+            <button class="chip-btn" onclick="applyGainPreset('conservative', this)">Conservador (Amortecido)</button>
+            <button class="chip-btn active" onclick="applyGainPreset('balanced', this)">Balanceado (Nominal)</button>
+            <button class="chip-btn" onclick="applyGainPreset('sport', this)">Rápido / Esportivo</button>
+          </div>
+
+          <!-- Kp -->
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="num-kp">Ganho Proporcional (Kp)</label>
+              <input type="number" id="num-kp" step="0.05" min="0" max="6.0" value="1.35" onchange="syncFromNum('kp')">
+            </div>
+            <input type="range" id="rng-kp" min="0.0" max="5.0" step="0.05" value="1.35" oninput="syncFromRange('kp')">
+          </div>
+
+          <!-- Ki -->
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="num-ki">Ganho Integral (Ki - Anti-Windup Clamping)</label>
+              <input type="number" id="num-ki" step="0.01" min="0" max="1.0" value="0.05" onchange="syncFromNum('ki')">
+            </div>
+            <input type="range" id="rng-ki" min="0.0" max="0.5" step="0.01" value="0.05" oninput="syncFromRange('ki')">
+          </div>
+
+          <!-- Kd -->
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="num-kd">Ganho Derivativo (Kd)</label>
+              <input type="number" id="num-kd" step="0.05" min="0" max="3.0" value="0.85" onchange="syncFromNum('kd')">
+            </div>
+            <input type="range" id="rng-kd" min="0.0" max="2.5" step="0.05" value="0.85" oninput="syncFromRange('kd')">
+          </div>
+
+          <!-- N (Filtro Passa-Baixa Derivativo) -->
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="num-n">Filtro Passa-Baixa Derivativo (N)</label>
+              <input type="number" id="num-n" step="1.0" min="5" max="50" value="20" onchange="syncFromNum('n')">
+            </div>
+            <input type="range" id="rng-n" min="5.0" max="40.0" step="1.0" value="20.0" oninput="syncFromRange('n')">
+          </div>
+
+          <!-- Setpoints X e Y -->
+          <div class="tuning-dual-row">
+            <div class="tuning-group half">
+              <div class="tuning-label-row">
+                <label for="num-spx">Setpoint X (mm)</label>
+                <input type="number" id="num-spx" step="1" min="-70" max="70" value="0" onchange="syncFromNum('spx')">
+              </div>
+              <input type="range" id="rng-spx" min="-60" max="60" step="1" value="0" oninput="syncFromRange('spx')">
+            </div>
+            <div class="tuning-group half">
+              <div class="tuning-label-row">
+                <label for="num-spy">Setpoint Y (mm)</label>
+                <input type="number" id="num-spy" step="1" min="-70" max="70" value="0" onchange="syncFromNum('spy')">
+              </div>
+              <input type="range" id="rng-spy" min="-60" max="60" step="1" value="0" oninput="syncFromRange('spy')">
+            </div>
+          </div>
+
+          <div class="separator-line"></div>
+
+          <!-- SEÇÃO FILTRO DE KALMAN E LATÊNCIA -->
+          <div class="section-title-group">
+            <div class="title-with-toggle">
+              <h3 class="section-heading">Filtro de Kalman 2D & Compensação de Latência</h3>
+              <label class="switch">
+                <input type="checkbox" id="chk-use-kalman" checked onchange="updateKalmanSettings()">
+                <span class="slider-toggle"></span>
+              </label>
+            </div>
+            <p class="section-subtext">Estimação contínua de velocidade e projeção antecipatória de Smith:</p>
+          </div>
+
+          <!-- Compensação de Latência (ms) -->
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="num-latency">Atraso Estimado da Câmera (τd em ms)</label>
+              <input type="number" id="num-latency" step="1" min="0" max="80" value="30" onchange="syncKalmanLatencyNum()">
+            </div>
+            <input type="range" id="rng-latency" min="0" max="60" step="1" value="30" oninput="syncKalmanLatencyRange()">
+          </div>
+
+          <!-- Ruído de Aceleração do Processo (Qa) -->
+          <div class="tuning-dual-row">
+            <div class="tuning-group half">
+              <div class="tuning-label-row">
+                <label for="num-qa">Ruído Processo (Qa)</label>
+                <input type="number" id="num-qa" step="0.01" min="0.001" max="1.0" value="0.05" onchange="updateKalmanSettings()">
+              </div>
+            </div>
+            <div class="tuning-group half">
+              <div class="tuning-label-row">
+                <label for="num-rmeas">Ruído Câmera R (mm²)</label>
+                <input type="number" id="num-rmeas" step="0.5" min="0.1" max="25.0" value="2.25" onchange="updateKalmanSettings()">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ABA 2: CALIBRAÇÃO E FILTROS DE VISÃO COMPUTACIONAL               -->
+        <!-- ================================================================ -->
+        <div class="tab-content" id="tab-vision">
+          <div class="section-title-group">
+            <h3 class="section-heading">Motor de Percepção Visual</h3>
+            <p class="section-subtext">Selecione o detector e ajuste os limiares de segmentação:</p>
+          </div>
+
+          <div class="detector-switch-box">
+            <button class="detector-option-btn active" id="btn-det-hsv" onclick="setDetectorMode('hsv')">
+              <span class="det-title">Espaço de Cores HSV</span>
+              <span class="det-sub">Ultra-rápido (&lt; 3 ms) &middot; Baixo uso de CPU</span>
+            </button>
+            <button class="detector-option-btn" id="btn-det-yolo" onclick="setDetectorMode('yolo')">
+              <span class="det-title">Rede Neural YOLO ONNX</span>
+              <span class="det-sub">Robusto a sombras &middot; Inferência ARMv7</span>
+            </button>
+          </div>
+
+          <div class="mask-toggle-card">
+            <label class="toggle-container">
+              <input type="checkbox" id="chk-mask-view" onchange="toggleBinaryMask(this.checked)">
+              <span class="toggle-slider"></span>
+              <span class="toggle-text">Exibir Máscara Binária Segmentada (P&amp;B)</span>
+            </label>
+          </div>
+
+          <!-- Presets de Cores da Esfera -->
+          <div class="preset-pill-row">
+            <span class="preset-label">Presets de Cor:</span>
+            <button class="chip-btn active" onclick="applyColorPreset('orange_ball')">Esfera Laranja (Ping-Pong)</button>
+            <button class="chip-btn" onclick="applyColorPreset('white_ball')">Esfera Branca / Metal</button>
+          </div>
+
+          <!-- SLIDERS HSV -->
+          <div class="hsv-grid">
+            <div class="tuning-group">
+              <div class="tuning-label-row"><span>H Mín (0-179)</span><span class="val font-mono" id="lbl-h-min">5</span></div>
+              <input type="range" id="rng-h-min" min="0" max="179" value="5" oninput="updateVisionFilters()">
+            </div>
+            <div class="tuning-group">
+              <div class="tuning-label-row"><span>H Máx (0-179)</span><span class="val font-mono" id="lbl-h-max">25</span></div>
+              <input type="range" id="rng-h-max" min="0" max="179" value="25" oninput="updateVisionFilters()">
+            </div>
+            <div class="tuning-group">
+              <div class="tuning-label-row"><span>S Mín (0-255)</span><span class="val font-mono" id="lbl-s-min">120</span></div>
+              <input type="range" id="rng-s-min" min="0" max="255" value="120" oninput="updateVisionFilters()">
+            </div>
+            <div class="tuning-group">
+              <div class="tuning-label-row"><span>S Máx (0-255)</span><span class="val font-mono" id="lbl-s-max">255</span></div>
+              <input type="range" id="rng-s-max" min="0" max="255" value="255" oninput="updateVisionFilters()">
+            </div>
+            <div class="tuning-group">
+              <div class="tuning-label-row"><span>V Mín (0-255)</span><span class="val font-mono" id="lbl-v-min">100</span></div>
+              <input type="range" id="rng-v-min" min="0" max="255" value="100" oninput="updateVisionFilters()">
+            </div>
+            <div class="tuning-group">
+              <div class="tuning-label-row"><span>V Máx (0-255)</span><span class="val font-mono" id="lbl-v-max">255</span></div>
+              <input type="range" id="rng-v-max" min="0" max="255" value="255" oninput="updateVisionFilters()">
+            </div>
+          </div>
+
+          <!-- Filtros Espaciais (Blur e Raio) -->
+          <div class="tuning-dual-row" style="margin-top:10px;">
+            <div class="tuning-group half">
+              <div class="tuning-label-row">
+                <label>Filtro Gaussiano (Blur)</label>
+                <span class="val font-mono" id="lbl-blur">5 px</span>
+              </div>
+              <input type="range" id="rng-blur" min="1" max="11" step="2" value="5" oninput="updateVisionFilters()">
+            </div>
+            <div class="tuning-group half">
+              <div class="tuning-label-row">
+                <label>Raio Mín / Máx (px)</label>
+                <span class="val font-mono" id="lbl-radius">4 - 40</span>
+              </div>
+              <input type="range" id="rng-max-radius" min="10" max="60" value="40" oninput="updateVisionFilters()">
+            </div>
+          </div>
+
+          <!-- NOVO: ALINHAMENTO & ORIENTAÇÃO CÂMERA <-> MOTORES -->
+          <div class="orientation-box" style="margin-top:14px; padding:12px 14px; background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); border-radius:var(--radius-md);">
+            <span class="invert-title" style="display:block; margin-bottom:8px;">📐 Alinhamento &amp; Orientação Câmera &lt;-&gt; Motores:</span>
+
+            <div class="tuning-dual-row">
+              <div class="tuning-group half">
+                <label style="font-size:0.75rem; color:var(--text-muted);">Rotação da Câmera</label>
+                <select id="sel-cam-rot" class="select-control" onchange="updateOrientationSettings()">
+                  <option value="0">0° (Padrão)</option>
+                  <option value="90">90° Horário</option>
+                  <option value="180">180° Invertido</option>
+                  <option value="270">270° Anti-horário</option>
+                </select>
+              </div>
+              <div class="tuning-group half">
+                <label style="font-size:0.75rem; color:var(--text-muted);">Motor Frontal (Em frente à Câmera)</label>
+                <select id="sel-front-motor" class="select-control" onchange="updateOrientationSettings()">
+                  <option value="1">Motor 1 (Frente Padrão)</option>
+                  <option value="2">Motor 2</option>
+                  <option value="3" selected>Motor 3 (Frente Atual)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="checkbox-row" style="margin-top:10px;">
+              <label class="check-label"><input type="checkbox" id="chk-inv-x" onchange="updateOrientationSettings()"> Inverter Eixo X</label>
+              <label class="check-label"><input type="checkbox" id="chk-inv-y" onchange="updateOrientationSettings()"> Inverter Eixo Y</label>
+              <label class="check-label"><input type="checkbox" id="chk-swap-xy" onchange="updateOrientationSettings()"> Trocar X &lt;-&gt; Y</label>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ABA 3: CONTROLE MANUAL & ATUADORES DE PASSO                      -->
+        <!-- ================================================================ -->
+        <div class="tab-content" id="tab-motors">
+          <div class="section-title-group">
+            <h3 class="section-heading">Controle Manual de Inclinação e Atuação</h3>
+            <p class="section-subtext">Comando direto dos 3 motores de passo NEMA 17 com drivers TMC2209:</p>
+          </div>
+
+          <!-- NOVO: TRAVA DE TORQUE / ENERGIZAÇÃO EM STANDBY -->
+          <div class="torque-control-box" style="margin-bottom:10px; padding:10px 14px; background:rgba(0,240,255,0.04); border:1px solid rgba(0,240,255,0.2); border-radius:var(--radius-md); display:flex; align-items:center; justify-content:space-between;">
+            <div>
+              <span style="font-size:0.8rem; font-weight:700; color:var(--accent-cyan); display:block;">Trava de Torque em Standby (Bobinas Energizadas)</span>
+              <span style="font-size:0.7rem; color:var(--text-dim);">Mantém corrente ativa nas bobinas para segurar o peso da placa nivelada</span>
+            </div>
+            <div class="btn-group" style="gap:6px;">
+              <button class="btn btn-sm btn-emerald" onclick="setTorqueHold(true)">🔒 Travar</button>
+              <button class="btn btn-sm btn-rose" onclick="setTorqueHold(false)">🔓 Soltar</button>
+            </div>
+          </div>
+
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="rng-pitch">Inclinação Pitch (α) [-12° a +12°]</label>
+              <span class="val font-mono" id="lbl-manual-pitch">0.0°</span>
+            </div>
+            <input type="range" id="rng-pitch" min="-12.0" max="12.0" step="0.5" value="0.0" oninput="sendManualTilt()">
+          </div>
+
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="rng-roll">Inclinação Roll (β) [-12° a +12°]</label>
+              <span class="val font-mono" id="lbl-manual-roll">0.0°</span>
+            </div>
+            <input type="range" id="rng-roll" min="-12.0" max="12.0" step="0.5" value="0.0" oninput="sendManualTilt()">
+          </div>
+
+          <div class="tuning-group">
+            <div class="tuning-label-row">
+              <label for="rng-delay">Velocidade de Passo (Temporização us)</label>
+              <span class="val font-mono" id="lbl-delay">1400 µs (~350 Hz)</span>
+            </div>
+            <input type="range" id="rng-delay" min="600" max="3000" step="50" value="1400" oninput="updateMotorSpeed()">
+          </div>
+
+          <!-- Inversão de Sentido dos Motores -->
+          <div class="invert-box">
+            <span class="invert-title">Inversão de Sentido Físico dos Motores:</span>
+            <div class="checkbox-row">
+              <label class="check-label"><input type="checkbox" id="chk-inv-1" checked onchange="toggleInvertMotor(1, this.checked)"> Inverter M1 (0°)</label>
+              <label class="check-label"><input type="checkbox" id="chk-inv-2" onchange="toggleInvertMotor(2, this.checked)"> Inverter M2 (120°)</label>
+              <label class="check-label"><input type="checkbox" id="chk-inv-3" onchange="toggleInvertMotor(3, this.checked)"> Inverter M3 (240°)</label>
+            </div>
+          </div>
+
+          <!-- Jog Individual de Micropassos -->
+          <div class="jog-section">
+            <span class="jog-title">Passo a Passo Individual por Motor:</span>
+            <div class="jog-row">
+              <span class="motor-tag">Motor 1</span>
+              <button class="btn btn-sm btn-cyan" onclick="jogMotor(1, -40)">-40 Passos</button>
+              <button class="btn btn-sm btn-cyan" onclick="jogMotor(1, +40)">+40 Passos</button>
+            </div>
+            <div class="jog-row">
+              <span class="motor-tag">Motor 2</span>
+              <button class="btn btn-sm btn-cyan" onclick="jogMotor(2, -40)">-40 Passos</button>
+              <button class="btn btn-sm btn-cyan" onclick="jogMotor(2, +40)">+40 Passos</button>
+            </div>
+            <div class="jog-row">
+              <span class="motor-tag">Motor 3</span>
+              <button class="btn btn-sm btn-cyan" onclick="jogMotor(3, -40)">-40 Passos</button>
+              <button class="btn btn-sm btn-cyan" onclick="jogMotor(3, +40)">+40 Passos</button>
+            </div>
+          </div>
+
+          <div class="btn-group-horizontal" style="margin-top:12px;">
+            <button class="btn btn-amber" onclick="levelPlatform()">Nivelar ao Neutro (0, 0, 0)</button>
+            <button class="btn btn-rose" onclick="tareZeroPosition()">Calibrar Atual como Zero (Tare)</button>
+          </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ABA 4: RECORTE DA ÁREA ÚTIL DA PLACA (ROI)                       -->
+        <!-- ================================================================ -->
+        <div class="tab-content" id="tab-roi">
+          <div class="section-title-group">
+            <h3 class="section-heading">Janela de Interesse (ROI) da Placa</h3>
+            <p class="section-subtext">Delimite os limites da superfície da placa para isolar ruídos de fundo:</p>
+          </div>
+
+          <div class="tuning-group">
+            <div class="tuning-label-row"><span>Início X (px)</span><span class="val font-mono" id="lbl-crop-x">0</span></div>
+            <input type="range" id="rng-crop-x" min="0" max="300" value="0" oninput="updateCropSettings()">
+          </div>
+          <div class="tuning-group">
+            <div class="tuning-label-row"><span>Início Y (px)</span><span class="val font-mono" id="lbl-crop-y">0</span></div>
+            <input type="range" id="rng-crop-y" min="0" max="220" value="0" oninput="updateCropSettings()">
+          </div>
+          <div class="tuning-group">
+            <div class="tuning-label-row"><span>Largura (px)</span><span class="val font-mono" id="lbl-crop-w">320</span></div>
+            <input type="range" id="rng-crop-w" min="80" max="320" value="320" oninput="updateCropSettings()">
+          </div>
+          <div class="tuning-group">
+            <div class="tuning-label-row"><span>Altura (px)</span><span class="val font-mono" id="lbl-crop-h">240</span></div>
+            <input type="range" id="rng-crop-h" min="80" max="240" value="240" oninput="updateCropSettings()">
+          </div>
+
+          <div class="btn-group-horizontal" style="margin-top:12px;">
+            <button class="btn btn-cyan" onclick="resetCropFull()">Restaurar Quadro Completo (320x240)</button>
+          </div>
+        </div>
+
+        <!-- ================================================================ -->
+        <!-- ABA 5: MODO HÍBRIDO & CONFIGURAÇÃO STM32                         -->
+        <!-- ================================================================ -->
+        <div class="tab-content" id="tab-hardware">
+          <div class="section-title-group">
+            <h3 class="section-heading">Arquitetura de Hardware &amp; STM32</h3>
+            <p class="section-subtext">Supervisão da UART determinística e pinagem configurável:</p>
+          </div>
+
+          <!-- Status do Enlace UART -->
+          <div class="hardware-status-card">
+            <div class="hw-item">
+              <span class="hw-lbl">Porta Serial UART</span>
+              <span class="hw-val font-mono" id="hw-uart-port">/dev/ttyACM0 (115200 bps)</span>
+            </div>
+            <div class="hw-item">
+              <span class="hw-lbl">Pacotes TX Transmitidos</span>
+              <span class="hw-val font-mono text-cyan" id="hw-packets-tx">0</span>
+            </div>
+            <div class="hw-item">
+              <span class="hw-lbl">Falhas de Envio</span>
+              <span class="hw-val font-mono text-rose" id="hw-packets-fail">0</span>
+            </div>
+          </div>
+
+          <!-- Tabela de Pinagem RPi vs STM32 -->
+          <div class="pinout-table-container">
+            <h4 class="pinout-heading">Mapeamento de Pinagem dos Atuadores</h4>
+            <table class="pinout-table">
+              <thead>
+                <tr>
+                  <th>Sinal</th>
+                  <th>Raspberry Pi 3 (Ativo)</th>
+                  <th>STM32F446RE (Configurável)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Motor 1 (0°)</strong></td>
+                  <td>DIR: GPIO17 | STEP: GPIO18 | EN: GPIO27</td>
+                  <td>DIR: PA0 | STEP: PA1 | EN: PA4</td>
+                </tr>
+                <tr>
+                  <td><strong>Motor 2 (120°)</strong></td>
+                  <td>DIR: GPIO24 | STEP: GPIO23 | EN: GPIO22</td>
+                  <td>DIR: PB0 | STEP: PB1 | EN: PB2</td>
+                </tr>
+                <tr>
+                  <td><strong>Motor 3 (240°)</strong></td>
+                  <td>DIR: GPIO25 | STEP: GPIO9  | EN: GPIO10</td>
+                  <td>DIR: PB10 | STEP: PB11 | EN: PB12</td>
+                </tr>
+                <tr>
+                  <td><strong>UART Link</strong></td>
+                  <td>TX: GPIO14 | RX: GPIO15 ou USB</td>
+                  <td>USART2: TX=PA2 | RX=PA3</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
