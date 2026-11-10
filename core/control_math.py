@@ -122,9 +122,9 @@ class DiscreteKalman2D:
         self.kf_x.set_parameters(ts=ts, q_accel=q_accel, r_meas=r_meas)
         self.kf_y.set_parameters(ts=ts, q_accel=q_accel, r_meas=r_meas)
 
-    def reset(self):
-        self.kf_x.reset()
-        self.kf_y.reset()
+    def reset(self, init_x: float = 0.0, init_y: float = 0.0, init_vx: float = 0.0, init_vy: float = 0.0):
+        self.kf_x.reset(init_pos=init_x, init_vel=init_vx)
+        self.kf_y.reset(init_pos=init_y, init_vel=init_vy)
 
     def predict(self, pitch_rad: float, roll_rad: float, dt: float = None):
         u_accel_x = -self.CG_ACCEL * pitch_rad

@@ -488,7 +488,7 @@ class SerialBridge:
                 return False
 
     def send_coordinates(self, timestamp_ms: int, pos_x_mm: float, pos_y_mm: float,
-                         detected: bool, is_yolo: bool, confidence: float):
+                         detected: bool, is_yolo: bool = False, confidence: float = 0.0):
         x_tenths = max(-32768, min(32767, int(round(pos_x_mm * 10.0))))
         y_tenths = max(-32768, min(32767, int(round(pos_y_mm * 10.0))))
         flags = (1 if detected else 0) | ((1 if is_yolo else 0) << 1)

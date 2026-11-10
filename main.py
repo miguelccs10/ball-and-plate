@@ -26,7 +26,14 @@ except ImportError:
     np = None
 
 import config
-from core.vision import CameraStream, roi_scale_mm_per_px, pixel_to_plate_mm, plate_mm_to_pixel, create_detector
+from core.vision import (
+    CameraStream,
+    AprilTagCalibrator,
+    roi_scale_mm_per_px,
+    pixel_to_plate_mm,
+    plate_mm_to_pixel,
+    create_detector
+)
 from core.control_math import DiscreteKalman2D, DiscretePID, HexagonalKinematics3DoF
 from core.hardware import MotorController, SerialBridge
 from web.server import DashboardServerContext, run_dashboard_server
@@ -89,6 +96,12 @@ class AppState:
         self.op_mode = config.DEFAULT_OP_MODE
         self.detector_type = "hsv"
 
+        self.cam_height_mm = getattr(config, "CAMERA_HEIGHT_MM", 450.0)
+        self.request_tag_calib = True
+        self.tag_calibrated = False
+        self.tags_detected = 0
+        self.cam_tilt_deg = 0.0
+
         self.hsv_lower = list(config.HSV_LOWER)
         self.hsv_upper = list(config.HSV_UPPER)
         self.blur_size = config.BALL_BLUR_SIZE
@@ -105,7 +118,9 @@ class AppState:
 def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional[SerialBridge],
                 state: AppState, motor_ctrl: MotorController, kinematics: HexagonalKinematics3DoF,
                 pid_x: DiscretePID, pid_y: DiscretePID, kalman: DiscreteKalman2D,
-                preview: bool = False):
+                calibrator: Optional[AprilTagCalibrator] = None, preview: bool = False):
+    if calibrator is None:
+        calibrator = AprilTagCalibrator()
     last_frame_id = -1
     t_prev = time.time()
     fps_counter = 0
@@ -153,6 +168,21 @@ def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional
             inv_y = state.invert_y
             sw_xy = state.swap_xy
             show_mask_flag = state.show_mask
+            req_calib = state.request_tag_calib
+            cam_h_mm = state.cam_height_mm
+
+        if req_calib and frame is not None:
+            calibrator.calibrate_from_frame(frame)
+            with state.lock:
+                state.request_tag_calib = False
+                state.tag_calibrated = calibrator.is_calibrated
+                state.tags_detected = calibrator.tags_detected
+                state.cam_tilt_deg = calibrator.estimated_cam_tilt_deg
+        elif not calibrator.is_calibrated:
+            with state.lock:
+                state.tag_calibrated = False
+                state.tags_detected = calibrator.tags_detected
+                state.cam_tilt_deg = 0.0
 
         cur_pitch_rad = math.radians(cur_pitch_deg)
         cur_roll_rad = math.radians(cur_roll_deg)
@@ -174,12 +204,20 @@ def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional
 
             if detected:
                 ball_px_x, ball_px_y, radius = coords
-                pos_x_mm, pos_y_mm = pixel_to_plate_mm(
-                    ball_px_x, ball_px_y, cw, ch, scale,
-                    rotation_deg=cam_rot, invert_x=inv_x, invert_y=inv_y, swap_xy=sw_xy
-                )
                 global_ball_x = int(ball_px_x + cx)
                 global_ball_y = int(ball_px_y + cy)
+
+                if calibrator.is_calibrated:
+                    pos_x_mm, pos_y_mm = calibrator.pixel_to_mm(
+                        global_ball_x, global_ball_y,
+                        cam_height_mm=cam_h_mm,
+                        z_ball=getattr(config, "BALL_RADIUS_MM", 20.0)
+                    )
+                else:
+                    pos_x_mm, pos_y_mm = pixel_to_plate_mm(
+                        ball_px_x, ball_px_y, cw, ch, scale,
+                        rotation_deg=cam_rot, invert_x=inv_x, invert_y=inv_y, swap_xy=sw_xy
+                    )
             else:
                 pos_x_mm, pos_y_mm = 0.0, 0.0
                 global_ball_x, global_ball_y = 0, 0
@@ -189,15 +227,21 @@ def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional
             pos_x_mm, pos_y_mm = 0.0, 0.0
             global_ball_x, global_ball_y = 0, 0
 
-        # Coasting de 5 quadros no Kalman
+        # Coasting de 5 quadros no Kalman com reset suave na reaquisição
         MAX_COAST_FRAMES = 5
         with state.lock:
+            prev_missing = state.missing_frames
             if detected:
                 state.missing_frames = 0
-                kalman.predict(cur_pitch_rad, cur_roll_rad, dt=dt_loop)
-                kalman.update(pos_x_mm * 1e-3, pos_y_mm * 1e-3)
+                if prev_missing > MAX_COAST_FRAMES:
+                    kalman.reset(init_x=pos_x_mm * 1e-3, init_y=pos_y_mm * 1e-3, init_vx=0.0, init_vy=0.0)
+                    pid_x.reset()
+                    pid_y.reset()
+                else:
+                    kalman.predict(cur_pitch_rad, cur_roll_rad, dt=dt_loop)
+                    kalman.update(pos_x_mm * 1e-3, pos_y_mm * 1e-3)
             else:
-                state.missing_frames = getattr(state, "missing_frames", 0) + 1
+                state.missing_frames = prev_missing + 1
                 if state.missing_frames <= MAX_COAST_FRAMES:
                     kalman.predict(cur_pitch_rad, cur_roll_rad, dt=dt_loop)
                 else:
@@ -242,7 +286,6 @@ def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional
                 pos_x_mm=pos_x_mm,
                 pos_y_mm=pos_y_mm,
                 detected=detected,
-                is_yolo=(detector.get_name() == "YOLO"),
                 confidence=conf
             )
 
@@ -251,16 +294,33 @@ def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional
                 vis_frame = cv2.cvtColor(detector.latest_mask, cv2.COLOR_GRAY2BGR)
             else:
                 vis_frame = frame.copy()
+
+                # Polígonos dos cantos das AprilTags detectadas
+                if calibrator and getattr(calibrator, "last_corners", None):
+                    for tag_c in calibrator.last_corners:
+                        pts = np.int32(tag_c).reshape((-1, 1, 2))
+                        cv2.polylines(vis_frame, [pts], isClosed=True, color=(0, 255, 255), thickness=2)
+
+                # Bounding box da ROI manual
                 cv2.rectangle(vis_frame, (cx, cy), (cx + cw, cy + ch), (0, 240, 255), 1)
+
+                # Círculo da esfera detectada
                 if detected:
                     cv2.circle(vis_frame, (global_ball_x, global_ball_y), int(radius), (0, 255, 0), 2)
                     cv2.circle(vis_frame, (global_ball_x, global_ball_y), 3, (0, 0, 255), -1)
 
-                sp_px_x, sp_px_y = plate_mm_to_pixel(
-                    sp_x, sp_y, cw, ch, scale,
-                    rotation_deg=cam_rot, invert_x=inv_x, invert_y=inv_y, swap_xy=sw_xy
-                )
-                cv2.drawMarker(vis_frame, (int(sp_px_x + cx), int(sp_px_y + cy)), (0, 165, 255),
+                # Crosshair de Setpoint (calibrador AprilTag ou fallback ROI)
+                if calibrator and calibrator.is_calibrated:
+                    sp_px_x, sp_px_y = calibrator.mm_to_pixel(sp_x, sp_y)
+                    sp_pt = (int(round(sp_px_x)), int(round(sp_px_y)))
+                else:
+                    sp_px_x, sp_px_y = plate_mm_to_pixel(
+                        sp_x, sp_y, cw, ch, scale,
+                        rotation_deg=cam_rot, invert_x=inv_x, invert_y=inv_y, swap_xy=sw_xy
+                    )
+                    sp_pt = (int(round(sp_px_x + cx)), int(round(sp_px_y + cy)))
+
+                cv2.drawMarker(vis_frame, sp_pt, (0, 165, 255),
                                markerType=cv2.MARKER_CROSS, markerSize=14, thickness=2)
 
             ok_enc, buf = cv2.imencode(".jpg", vis_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
@@ -313,7 +373,7 @@ def parse_args():
     parser.add_argument("--camera", type=int, default=config.CAMERA_INDEX, help="Índice da câmera V4L2")
     parser.add_argument("--serial-port", default=config.SERIAL_PORT, help="Porta UART para o STM32")
     parser.add_argument("--baud", type=int, default=config.SERIAL_BAUDRATE, help="Baudrate da serial")
-    parser.add_argument("--detector", choices=["hsv", "yolo"], default="hsv", help="Detector inicial")
+    parser.add_argument("--detector", choices=["hsv"], default="hsv", help="Detector inicial (padrão: hsv)")
     parser.add_argument("--op-mode", choices=["STANDALONE_RPI", "HYBRID_STM32"], default=config.DEFAULT_OP_MODE,
                         help="Modo de operação: STANDALONE_RPI ou HYBRID_STM32")
     parser.add_argument("--microsteps", type=int, default=config.DEFAULT_MICROSTEPS, help="Micropassos TMC2209")
@@ -361,6 +421,9 @@ def main():
         latency_sec=state.kalman_latency_ms / 1000.0
     )
 
+    # Calibrador AprilTag
+    calibrator = AprilTagCalibrator()
+
     # Inicializa Câmera
     camera = None
     if cv2 is not None:
@@ -372,17 +435,9 @@ def main():
             print(f"[CAMERA] Aviso: Câmera física não disponível ({e}).")
             camera = None
 
-    # Detectores Visuais
+    # Detector Visual Otimizado HSV
     detector_hsv = create_detector("hsv", hsv_lower=config.HSV_LOWER, hsv_upper=config.HSV_UPPER)
-    detector_yolo = create_detector("yolo", model_path=config.YOLO_MODEL_PATH)
-    active_detector = {"instance": detector_yolo if args.detector == "yolo" else detector_hsv}
-
-    def on_detector_change(name: str):
-        if name == "yolo":
-            active_detector["instance"] = detector_yolo
-        else:
-            active_detector["instance"] = detector_hsv
-        print(f"[VISÃO] Detector alternado para: {active_detector['instance'].get_name()}")
+    active_detector = {"instance": detector_hsv}
 
     # Comunicação Serial UART com STM32
     serial_bridge = SerialBridge(port=args.serial_port, baudrate=args.baud, mock_mode=False)
@@ -392,7 +447,7 @@ def main():
 
     # Inicia Servidor Web se não for headless
     if not args.headless:
-        server_ctx = DashboardServerContext(
+        server_ctx_kwargs = dict(
             state=state,
             motor_ctrl=motor_ctrl,
             kinematics=kinematics,
@@ -400,8 +455,14 @@ def main():
             pid_y=pid_y,
             kalman=kalman,
             serial_bridge=serial_bridge,
-            on_detector_change=on_detector_change
+            on_detector_change=None
         )
+        try:
+            server_ctx = DashboardServerContext(**server_ctx_kwargs, calibrator=calibrator)
+        except TypeError:
+            server_ctx = DashboardServerContext(**server_ctx_kwargs)
+            setattr(server_ctx, "calibrator", calibrator)
+
         web_server = run_dashboard_server("0.0.0.0", args.port, server_ctx)
         server_thread = threading.Thread(target=web_server.serve_forever, daemon=True)
         server_thread.start()
@@ -419,6 +480,7 @@ def main():
             pid_x=pid_x,
             pid_y=pid_y,
             kalman=kalman,
+            calibrator=calibrator,
             preview=args.preview
         )
     except KeyboardInterrupt:

@@ -3,7 +3,7 @@
 """
 ==============================================================================
 Suíte Unificada de Testes e Calibração de Bancada (tools/bench_suite.py)
-Testes Cardeais, Trajetórias, Diagnóstico Elétrico, Calibração e Exportação YOLO
+Testes Cardeais, Trajetórias, Diagnóstico Elétrico e Calibração
 Autor: Miguel Carlos Costa Sousa — UFG
 ==============================================================================
 """
@@ -379,30 +379,6 @@ def run_interactive_calibration(motor_ctrl: MotorController = None):
 
 
 # ==============================================================================
-# 3. EXPORTAÇÃO YOLO PARA ONNX (DESENVOLVIMENTO)
-# ==============================================================================
-def export_yolo_onnx(model_name: str = "yolov8n.pt", input_size: int = 224, output_dir: str = None):
-    try:
-        from ultralytics import YOLO
-    except ImportError:
-        print("❌ Biblioteca 'ultralytics' não encontrada. Instale com: pip install ultralytics onnx")
-        return
-
-    out_dir = output_dir or os.path.join(BASE_DIR, "models")
-    if not os.path.isabs(out_dir):
-        out_dir = os.path.join(BASE_DIR, out_dir)
-    os.makedirs(out_dir, exist_ok=True)
-    target_onnx = os.path.join(out_dir, "ball_detector_yolo.onnx")
-    print(f"[*] Carregando {model_name} e exportando para ONNX ({input_size}x{input_size})...")
-    model = YOLO(model_name)
-    exported = model.export(format="onnx", imgsz=input_size, simplify=True, dynamic=False, opset=12)
-    if os.path.exists(exported):
-        import shutil
-        shutil.move(exported, target_onnx)
-        print(f"✅ Modelo gerado: {target_onnx} ({os.path.getsize(target_onnx)/(1024*1024):.2f} MB)")
-
-
-# ==============================================================================
 # MENU PRINCIPAL DE BANCADA
 # ==============================================================================
 def main():
@@ -412,14 +388,7 @@ def main():
     parser.add_argument("--apply-calibration", action="store_true", default=True, help="Aplica offsets salvos do JSON ao iniciar (padrão: True)")
     parser.add_argument("--no-calibration", dest="apply_calibration", action="store_false", help="Ignora offsets salvos do JSON")
     parser.add_argument("--calibrate", action="store_true", help="Abre diretamente a rotina interativa de calibração")
-    parser.add_argument("--export-yolo", action="store_true", help="Executa exportação ONNX de modelo YOLO")
-    parser.add_argument("--model", type=str, default="yolov8n.pt", help="Modelo para exportação YOLO")
-    parser.add_argument("--size", type=int, default=224, help="Resolução de entrada YOLO")
     args = parser.parse_args()
-
-    if args.export_yolo:
-        export_yolo_onnx(args.model, args.size)
-        return
 
     steps_per_rev = 200 * args.microsteps
     kin = HexagonalKinematics3DoF(steps_per_rev=steps_per_rev, front_motor_id=args.front_motor)

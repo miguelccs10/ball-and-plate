@@ -64,21 +64,25 @@ KALMAN_DEFAULT_R_MEAS = 2.25e-6     # Variância de medição da câmera (sigma 
 KALMAN_DEFAULT_LATENCY_SEC = 0.030  # Compensação de atraso visual padrão (30 ms)
 
 # ==============================================================================
-# DETECTORES VISUAIS (HSV / YOLO)
+# CALIBRAÇÃO APRILTAG E DETECTOR VISUAL HSV
 # ==============================================================================
-YOLO_MODEL_PATH = os.environ.get(
-    "YOLO_MODEL_PATH",
-    os.path.join(BASE_DIR, "models", "ball_detector_yolo.onnx")
-)
-YOLO_CONF_THRESHOLD = 0.45
-YOLO_NMS_THRESHOLD = 0.40
-YOLO_INPUT_SIZE = (224, 224)
+APRILTAG_DICT_NAME = "DICT_APRILTAG_36h11"
+APRILTAG_SIZE_MM = 30.0
+APRILTAG_LAYOUT_MM = {
+    0: (-110.0, 110.0),
+    1: (110.0, 110.0),
+    2: (110.0, -110.0),
+    3: (-110.0, -110.0),
+}
+BALL_RADIUS_MM = 20.0
+CAMERA_HEIGHT_MM = 450.0
 
 # Detector por Espaço de Cor HSV
 HSV_LOWER = (5, 120, 100)
 HSV_UPPER = (25, 255, 255)
 BALL_MIN_RADIUS_PX = 4
 BALL_MAX_RADIUS_PX = 40
+BALL_MIN_CIRCULARITY = 0.65
 BALL_BLUR_SIZE = 5
 
 # ==============================================================================

@@ -242,17 +242,43 @@ function updateKalmanSettings() {
 // ==============================================================================
 // VISÃO COMPUTACIONAL E FILTROS DE COR
 // ==============================================================================
+function calibrateAprilTag() {
+  fetch('/api/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'calibrate_apriltag' })
+  }).catch(err => console.error('[APRILTAG] Erro ao calibrar:', err));
+}
+
+function resetAprilTag() {
+  fetch('/api/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'reset_apriltag' })
+  }).catch(err => console.error('[APRILTAG] Erro ao resetar:', err));
+}
+
+function updateCameraHeight(val) {
+  const h = parseFloat(val);
+  if (!Number.isFinite(h)) return;
+  fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cam_height_mm: h })
+  }).catch(err => console.error('[CONFIG] Erro ao atualizar cam_height_mm:', err));
+}
+
 function setDetectorMode(det) {
   fetch('/api/detector', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ detector: det })
   }).then(() => {
-    document.getElementById('btn-det-hsv').classList.toggle('active', det === 'hsv');
-    document.getElementById('btn-det-yolo').classList.toggle('active', det === 'yolo');
+    const btnHsv = document.getElementById('btn-det-hsv');
+    if (btnHsv) btnHsv.classList.toggle('active', det === 'hsv');
     const badge = document.getElementById('badge-detector-txt');
     if (badge) badge.innerText = 'DETECTOR: ' + det.toUpperCase();
-  });
+  }).catch(err => console.error(err));
 }
 
 function toggleBinaryMask(checked) {
@@ -567,10 +593,13 @@ function hydrateInitialControls(data) {
   }
 
   const btnDetHsv = document.getElementById('btn-det-hsv');
-  const btnDetYolo = document.getElementById('btn-det-yolo');
-  if (btnDetHsv && btnDetYolo && data.detector) {
+  if (btnDetHsv && data.detector) {
     btnDetHsv.classList.toggle('active', data.detector === 'hsv');
-    btnDetYolo.classList.toggle('active', data.detector === 'yolo');
+  }
+
+  const elCamH = document.getElementById('num-cam-height');
+  if (elCamH && typeof data.cam_height_mm !== 'undefined' && document.activeElement !== elCamH) {
+    elCamH.value = data.cam_height_mm;
   }
 
   // Hidratação dos Filtros HSV e Visão
@@ -744,13 +773,34 @@ setInterval(() => {
       }
       updateAutoButton(data.mode);
 
-      // 4. Status de Hardware / UART
+      // 4. Status AprilTag
+      const badgeTag = document.getElementById('badge-tag-status');
+      const badgeTagTxt = document.getElementById('badge-tag-txt');
+      if (badgeTag && badgeTagTxt && typeof data.tag_calibrated !== 'undefined') {
+        if (data.tag_calibrated) {
+          badgeTag.className = 'status-pill status-live';
+          badgeTagTxt.innerText = 'Calibrado';
+        } else {
+          badgeTag.className = 'status-pill status-warn';
+          badgeTagTxt.innerText = 'Não Calibrado';
+        }
+      }
+      const lblTags = document.getElementById('lbl-tags-detected');
+      if (lblTags && typeof data.tags_detected !== 'undefined') {
+        lblTags.innerText = data.tags_detected + '/4 Tags';
+      }
+      const lblTilt = document.getElementById('lbl-cam-tilt');
+      if (lblTilt && typeof data.cam_tilt_deg !== 'undefined') {
+        lblTilt.innerText = data.cam_tilt_deg.toFixed(1) + '°';
+      }
+
+      // 5. Status de Hardware / UART
       const hwTx = document.getElementById('hw-packets-tx');
       const hwFail = document.getElementById('hw-packets-fail');
       if (hwTx) hwTx.innerText = data.uart_packets_sent;
       if (hwFail) hwFail.innerText = data.uart_packets_failed;
 
-      // 5. Renderização do Osciloscópio
+      // 6. Renderização do Osciloscópio
       if (data.history) {
         renderOscilloscope(data.history);
       }

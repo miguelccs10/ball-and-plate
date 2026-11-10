@@ -67,7 +67,7 @@ def _safe_hsv_triplet(val, default_triplet):
 
 
 class DashboardServerContext:
-    def __init__(self, state, motor_ctrl, kinematics, pid_x, pid_y, kalman, serial_bridge=None, on_detector_change=None):
+    def __init__(self, state, motor_ctrl, kinematics, pid_x, pid_y, kalman, serial_bridge=None, on_detector_change=None, calibrator=None):
         self.state = state
         self.motor_ctrl = motor_ctrl
         self.kinematics = kinematics
@@ -76,6 +76,7 @@ class DashboardServerContext:
         self.kalman = kalman
         self.serial_bridge = serial_bridge
         self.on_detector_change = on_detector_change
+        self.calibrator = calibrator
 
 
 class ThreadedServer(ThreadingHTTPServer):
@@ -228,6 +229,11 @@ def create_handler(context: DashboardServerContext):
                         "crop_y": getattr(state, "crop_y", 0),
                         "crop_w": getattr(state, "crop_w", 320),
                         "crop_h": getattr(state, "crop_h", 240),
+                        # AprilTag Homography & Parallax Telemetry
+                        "tag_calibrated": getattr(state, "tag_calibrated", False),
+                        "tags_detected": getattr(state, "tags_detected", 0),
+                        "cam_tilt_deg": getattr(state, "cam_tilt_deg", 0.0),
+                        "cam_height_mm": getattr(state, "cam_height_mm", 450.0),
                         "uart_connected": (ser_b is not None and not ser_b.mock_mode and ser_b.ser is not None and ser_b.ser.is_open),
                         "uart_packets_sent": getattr(ser_b, "packets_sent", 0) if ser_b else 0,
                         "uart_packets_failed": getattr(ser_b, "packets_failed", 0) if ser_b else 0,
@@ -266,7 +272,8 @@ def create_handler(context: DashboardServerContext):
             # Rota Unificada 2: POST /api/action
             elif parsed.path == "/api/action" or parsed.path in [
                 "/api/level", "/api/zero", "/api/reset_calibration",
-                "/api/jog_motor", "/api/manual_tilt", "/api/torque", "/api/preset"
+                "/api/jog_motor", "/api/manual_tilt", "/api/torque", "/api/preset",
+                "/api/calibrate_apriltag", "/api/reset_apriltag"
             ]:
                 self._handle_action(data, parsed.path)
                 self._send_json_ok()
@@ -355,6 +362,10 @@ def create_handler(context: DashboardServerContext):
                 # Máscara
                 if "show_mask" in data: state.show_mask = bool(data["show_mask"])
 
+                # Altura da Câmera AprilTag (clamped 100.0 - 2000.0 mm)
+                if "cam_height_mm" in data:
+                    state.cam_height_mm = _safe_float(data["cam_height_mm"], getattr(state, "cam_height_mm", 450.0), 100.0, 2000.0)
+
                 # Detector
                 if "detector" in data:
                     det_name = str(data["detector"]).lower().strip()
@@ -397,6 +408,8 @@ def create_handler(context: DashboardServerContext):
                 elif path == "/api/manual_tilt": action = "manual_tilt"
                 elif path == "/api/torque": action = "torque"
                 elif path == "/api/preset": action = "preset"
+                elif path == "/api/calibrate_apriltag": action = "calibrate_apriltag"
+                elif path == "/api/reset_apriltag": action = "reset_apriltag"
 
             if action == "level":
                 with state.lock:
@@ -494,6 +507,19 @@ def create_handler(context: DashboardServerContext):
                         state.max_radius = 42
                     pid_x.set_gains(kp=state.kp, ki=state.ki, kd=state.kd, n_filter=state.n_filter)
                     pid_y.set_gains(kp=state.kp, ki=state.ki, kd=state.kd, n_filter=state.n_filter)
+
+            elif action == "calibrate_apriltag":
+                with state.lock:
+                    state.request_tag_calib = True
+
+            elif action == "reset_apriltag":
+                if hasattr(context, "calibrator") and context.calibrator is not None:
+                    context.calibrator.reset()
+                with state.lock:
+                    state.request_tag_calib = False
+                    state.tag_calibrated = False
+                    state.tags_detected = 0
+                    state.cam_tilt_deg = 0.0
 
         def _send_json_ok(self):
             self.send_response(200)
