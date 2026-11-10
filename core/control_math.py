@@ -10,6 +10,7 @@ Autor: Miguel Carlos Costa Sousa — UFG
 
 import math
 from typing import Tuple, Optional, Dict, Any
+import config
 
 
 # ==============================================================================
@@ -29,10 +30,9 @@ class DiscreteKalman1D:
         self.p01 = 0.0
         self.p10 = 0.0
         self.p11 = 0.1
-        self._update_q_matrix()
+        self._update_q_matrix(self.ts)
 
-    def _update_q_matrix(self):
-        dt = self.ts
+    def _update_q_matrix(self, dt: float):
         dt2 = dt * dt
         dt3 = dt2 * dt
         dt4 = dt3 * dt
@@ -48,7 +48,7 @@ class DiscreteKalman1D:
             self.q_accel = float(q_accel)
         if r_meas is not None and r_meas > 1e-9:
             self.r_meas = float(r_meas)
-        self._update_q_matrix()
+        self._update_q_matrix(self.ts)
 
     def reset(self, init_pos: float = 0.0, init_vel: float = 0.0):
         self.x = float(init_pos)
@@ -59,7 +59,8 @@ class DiscreteKalman1D:
         self.p11 = 0.05
 
     def predict(self, control_accel: float = 0.0, dt: float = None):
-        dt_val = self.ts if dt is None else float(dt)
+        dt_val = self.ts if (dt is None or dt <= 0.0) else float(dt)
+        self._update_q_matrix(dt_val)
         dt2_half = 0.5 * dt_val * dt_val
 
         self.x += (self.v * dt_val) + (control_accel * dt2_half)
@@ -102,14 +103,18 @@ class DiscreteKalman1D:
 
 
 class DiscreteKalman2D:
-    """Filtro de Kalman 2D para a esfera com compensação de atraso visual de 30 ms."""
+    """Filtro de Kalman 2D para a esfera com compensação de atraso visual."""
 
     CG_ACCEL = (5.0 / 7.0) * 9.80665  # ~7.00475 m/s²
 
-    def __init__(self, ts: float = 0.033, q_accel: float = 0.05, r_meas: float = 2.25e-6, latency_sec: float = 0.030):
-        self.kf_x = DiscreteKalman1D(ts, q_accel, r_meas)
-        self.kf_y = DiscreteKalman1D(ts, q_accel, r_meas)
-        self.latency_sec = float(latency_sec)
+    def __init__(self, ts: float = 0.033, q_accel: float = None, r_meas: float = None, latency_sec: float = None):
+        q = q_accel if q_accel is not None else getattr(config, "KALMAN_DEFAULT_Q_ACCEL", 0.05)
+        r = r_meas if r_meas is not None else getattr(config, "KALMAN_DEFAULT_R_MEAS", 2.25e-6)
+        lat = latency_sec if latency_sec is not None else getattr(config, "KALMAN_DEFAULT_LATENCY_SEC", 0.030)
+
+        self.kf_x = DiscreteKalman1D(ts, q, r)
+        self.kf_y = DiscreteKalman1D(ts, q, r)
+        self.latency_sec = float(lat)
 
     def set_parameters(self, q_accel: float = None, r_meas: float = None, latency_sec: float = None, ts: float = None):
         if latency_sec is not None:
@@ -160,14 +165,7 @@ class DiscretePID:
         self.ts = float(ts)
         self.reverse_acting = bool(reverse_acting)
         self.derivative_on_measurement = bool(derivative_on_measurement)
-
-        self.integral = 0.0
-        self.prev_error = 0.0
-        self.prev_measurement = 0.0
-        self.prev_derivative = 0.0
-        self.last_output = 0.0
-        self.is_saturated = False
-        self._has_prev_measurement = False
+        self.reset()
 
     def reset(self):
         self.integral = 0.0
@@ -189,12 +187,9 @@ class DiscretePID:
         self.out_max = float(out_max)
 
     def update(self, measurement: float, setpoint: float = 0.0, dt: float = None) -> float:
-        dt_val = self.ts if dt is None else max(1e-4, float(dt))
+        dt_val = self.ts if (dt is None or dt <= 0.0) else max(1e-4, float(dt))
 
-        if self.reverse_acting:
-            error = measurement - setpoint
-        else:
-            error = setpoint - measurement
+        error = (measurement - setpoint) if self.reverse_acting else (setpoint - measurement)
 
         if not self._has_prev_measurement:
             self.prev_measurement = measurement
@@ -239,37 +234,41 @@ class HexagonalKinematics3DoF:
     """Cinemática inversa analítica com 3 atuadores simétricos a 120°."""
 
     def __init__(self,
-                 base_radius=0.090,
-                 plate_radius=0.140,
-                 crank_arm=0.060,
-                 rod_length=0.090,
-                 nominal_z0=0.075,
-                 steps_per_rev=1600,
-                 front_motor_id=1):
-        self.Rb = base_radius
-        self.Rp = plate_radius
-        self.r = crank_arm
-        self.L = rod_length
-        self.z0 = nominal_z0
-        self.steps_per_rev = steps_per_rev
-        self.steps_per_rad = steps_per_rev / (2.0 * math.pi)
-        self.front_motor_id = int(front_motor_id)
+                 base_radius: float = None,
+                 plate_radius: float = None,
+                 crank_arm: float = None,
+                 rod_length: float = None,
+                 nominal_z0: float = None,
+                 steps_per_rev: int = 1600,
+                 front_motor_id: int = None):
+        self.Rb = float(base_radius if base_radius is not None else getattr(config, "GEOM_BASE_RADIUS_M", 0.090))
+        self.Rp = float(plate_radius if plate_radius is not None else getattr(config, "GEOM_PLATE_RADIUS_M", 0.140))
+        self.r = float(crank_arm if crank_arm is not None else getattr(config, "GEOM_CRANK_ARM_M", 0.060))
+        self.L = float(rod_length if rod_length is not None else getattr(config, "GEOM_ROD_LENGTH_M", 0.090))
+        self.z0 = float(nominal_z0 if nominal_z0 is not None else getattr(config, "GEOM_NOMINAL_Z0_M", 0.075))
 
-        self.set_front_motor(self.front_motor_id)
-        self.neutral_angle_rad = self._solve_leg_angle(self.Rp, self.z0)
-        if self.neutral_angle_rad is None:
-            self.neutral_angle_rad = math.radians(126.73)
+        self.max_plate_angle_rad = math.radians(getattr(config, "MAX_KINEMATIC_TILT_DEG", 15.0))
+        self.max_motor_excursion_rad = math.radians(getattr(config, "MAX_MOTOR_EXCURSION_DEG", 25.0))
+
+        self.set_steps_per_rev(steps_per_rev)
+        f_id = front_motor_id if front_motor_id is not None else getattr(config, "MOTOR_FRONT_ID", 3)
+        self.set_front_motor(f_id)
+
+        # Cálculo analítico do ângulo neutro a partir da geometria física
+        solved_neutral = self._solve_leg_angle(self.Rp, self.z0)
+        if solved_neutral is None:
+            raise ValueError("Geometria inválida: posição neutra z0 fora do alcance das hastes.")
+        self.neutral_angle_rad = solved_neutral
+        self.neutral_angle_deg = math.degrees(self.neutral_angle_rad)
 
     def set_front_motor(self, front_motor_id: int):
-        self.front_motor_id = int(front_motor_id)
+        self.front_motor_id = int(front_motor_id) if int(front_motor_id) in (1, 2, 3) else 1
         if self.front_motor_id == 1:
             self.leg_angles = [0.0, 2.0 * math.pi / 3.0, 4.0 * math.pi / 3.0]
         elif self.front_motor_id == 2:
             self.leg_angles = [4.0 * math.pi / 3.0, 0.0, 2.0 * math.pi / 3.0]
-        elif self.front_motor_id == 3:
-            self.leg_angles = [2.0 * math.pi / 3.0, 4.0 * math.pi / 3.0, 0.0]
         else:
-            self.leg_angles = [0.0, 2.0 * math.pi / 3.0, 4.0 * math.pi / 3.0]
+            self.leg_angles = [2.0 * math.pi / 3.0, 4.0 * math.pi / 3.0, 0.0]
 
     def set_steps_per_rev(self, spr: int):
         self.steps_per_rev = int(spr)
@@ -297,9 +296,8 @@ class HexagonalKinematics3DoF:
         if z0 is None:
             z0 = self.z0
 
-        max_angle = math.radians(15.0)
-        pitch = max(-max_angle, min(max_angle, pitch_rad))
-        roll = max(-max_angle, min(max_angle, roll_rad))
+        pitch = max(-self.max_plate_angle_rad, min(self.max_plate_angle_rad, float(pitch_rad)))
+        roll = max(-self.max_plate_angle_rad, min(self.max_plate_angle_rad, float(roll_rad)))
 
         cos_a = math.cos(pitch)
         sin_a = math.sin(pitch)
@@ -326,14 +324,13 @@ class HexagonalKinematics3DoF:
                 return False, None
 
             delta_theta = theta - self.neutral_angle_rad
-            max_delta = math.radians(25.0)
-            delta_theta = max(-max_delta, min(max_delta, delta_theta))
+            delta_theta = max(-self.max_motor_excursion_rad, min(self.max_motor_excursion_rad, delta_theta))
             theta = self.neutral_angle_rad + delta_theta
 
             steps = int(round(delta_theta * self.steps_per_rad))
 
             motor_angles_rad.append(theta)
-            motor_angles_deg.append(math.degrees(theta))
+            motor_angles_deg.append(round(math.degrees(theta), 2))
             motor_step_deltas.append(steps)
 
         return True, {
@@ -344,5 +341,5 @@ class HexagonalKinematics3DoF:
             "angles_rad": motor_angles_rad,
             "angles_deg": motor_angles_deg,
             "step_deltas": motor_step_deltas,
-            "neutral_angle_deg": math.degrees(self.neutral_angle_rad)
+            "neutral_angle_deg": round(self.neutral_angle_deg, 2)
         }

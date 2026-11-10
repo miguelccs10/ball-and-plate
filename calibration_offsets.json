@@ -1,21 +1,21 @@
 {
-  "timestamp": "2026-10-29 00:25:45",
+  "timestamp": "2026-10-29 22:39:24",
   "steps_per_rev": 1600,
   "nominal_neutral_deg": 126.73,
   "step_offsets": [
-    125,
-    125,
-    125
+    251,
+    269,
+    260
   ],
   "angle_offsets_deg": [
-    28.125,
-    28.125,
-    28.125
+    56.475,
+    60.525,
+    58.5
   ],
   "calibrated_neutral_angles_deg": [
-    154.855,
-    154.855,
-    154.855
+    183.205,
+    187.255,
+    185.23
   ],
   "is_calibrated": true,
   "description": "Offsets de nivelamento físico dos braços 3-DoF"

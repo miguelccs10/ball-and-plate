@@ -265,8 +265,8 @@ def create_handler(context: DashboardServerContext):
 
             # Rota Unificada 2: POST /api/action
             elif parsed.path == "/api/action" or parsed.path in [
-                "/api/level", "/api/zero", "/api/jog_motor", "/api/manual_tilt",
-                "/api/torque", "/api/preset"
+                "/api/level", "/api/zero", "/api/reset_calibration",
+                "/api/jog_motor", "/api/manual_tilt", "/api/torque", "/api/preset"
             ]:
                 self._handle_action(data, parsed.path)
                 self._send_json_ok()
@@ -392,6 +392,7 @@ def create_handler(context: DashboardServerContext):
             if not action:
                 if path == "/api/level": action = "level"
                 elif path == "/api/zero": action = "zero"
+                elif path == "/api/reset_calibration": action = "reset_calibration"
                 elif path == "/api/jog_motor": action = "jog"
                 elif path == "/api/manual_tilt": action = "manual_tilt"
                 elif path == "/api/torque": action = "torque"
@@ -401,28 +402,40 @@ def create_handler(context: DashboardServerContext):
                 with state.lock:
                     state.plate_pitch_deg = 0.0
                     state.plate_roll_deg = 0.0
+                    state.motor_angles_deg = [round(kinematics.neutral_angle_deg, 2)] * 3
                     pid_x.reset()
                     pid_y.reset()
                     if kalman: kalman.reset()
                 if state.op_mode == "STANDALONE_RPI":
-                    ok, res = kinematics.compute_inverse(0.0, 0.0)
-                    if ok: motor_ctrl.set_targets(res["step_deltas"])
+                    motor_ctrl.level()
                 elif state.op_mode == "HYBRID_STM32" and ser_b:
                     ser_b.send_system_command(3)
 
             elif action == "zero":
                 save_disk = bool(data.get("save_to_disk", True))
                 if state.op_mode == "STANDALONE_RPI":
-                    motor_ctrl.save_current_as_neutral()
+                    motor_ctrl.zero_calibration(save_to_disk=save_disk)
                 elif state.op_mode == "HYBRID_STM32" and ser_b:
                     ser_b.send_system_command(3)
                 with state.lock:
                     state.plate_pitch_deg = 0.0
                     state.plate_roll_deg = 0.0
+                    state.motor_angles_deg = [round(kinematics.neutral_angle_deg, 2)] * 3
                     pid_x.reset()
                     pid_y.reset()
                     if kalman: kalman.reset()
 
+            elif action == "reset_calibration":
+                if state.op_mode == "STANDALONE_RPI":
+                    motor_ctrl.reset_calibration()
+                with state.lock:
+                    state.plate_pitch_deg = 0.0
+                    state.plate_roll_deg = 0.0
+                    state.motor_angles_deg = [round(kinematics.neutral_angle_deg, 2)] * 3
+                    pid_x.reset()
+                    pid_y.reset()
+                    if kalman: kalman.reset()
+                    
             elif action == "jog":
                 motor_id = _safe_int(data.get("motor", 1), 1, 1, 3)
                 delta_steps = _safe_int(data.get("steps", 0), 0, -2000, 2000)

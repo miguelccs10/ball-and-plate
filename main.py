@@ -8,8 +8,6 @@ Autor: Miguel Carlos Costa Sousa — UFG
 ==============================================================================
 """
 
-import os
-import sys
 import time
 import math
 import argparse
@@ -22,6 +20,11 @@ try:
 except ImportError:
     cv2 = None
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 import config
 from core.vision import CameraStream, roi_scale_mm_per_px, pixel_to_plate_mm, plate_mm_to_pixel, create_detector
 from core.control_math import DiscreteKalman2D, DiscretePID, HexagonalKinematics3DoF
@@ -33,7 +36,7 @@ from web.server import DashboardServerContext, run_dashboard_server
 # ESTADO GLOBAL COMPARTILHADO (THREAD-SAFE COM RLock)
 # ==============================================================================
 class AppState:
-    def __init__(self):
+    def __init__(self, initial_neutral_deg: float = 0.0):
         self.lock = threading.RLock()
         self.frame_cond = threading.Condition(self.lock)
 
@@ -54,7 +57,7 @@ class AppState:
 
         self.plate_pitch_deg = 0.0
         self.plate_roll_deg = 0.0
-        self.motor_angles_deg = [126.73, 126.73, 126.73]
+        self.motor_angles_deg = [round(initial_neutral_deg, 2)] * 3
 
         self.kp = config.PID_DEFAULT_KP
         self.ki = config.PID_DEFAULT_KI
@@ -118,7 +121,7 @@ def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional
         else:
             time.sleep(0.033)
             cap_timestamp = time.time()
-            if cv2 is not None:
+            if cv2 is not None and np is not None:
                 frame = 25 * np.ones((config.FRAME_HEIGHT, config.FRAME_WIDTH, 3), dtype=np.uint8)
                 cv2.circle(frame, (160, 120), 10, (0, 165, 255), -1)
             else:
@@ -325,24 +328,25 @@ def main():
     args = parse_args()
 
     steps_per_rev = 200 * args.microsteps
+    kinematics = HexagonalKinematics3DoF(steps_per_rev=steps_per_rev, front_motor_id=args.front_motor)
+
     print("=" * 72)
     print("INICIANDO SISTEMA BALL AND PLATE 3-DoF")
     print(f"Modo Operacional:  {args.op_mode}")
     print(f"Motor Frontal:     Motor {args.front_motor}")
+    print(f"Ângulo Neutro:     {kinematics.neutral_angle_deg:.2f}° (calculado da geometria)")
     print(f"Resolução:         {steps_per_rev} passos/rev ({args.microsteps} micropassos)")
     print(f"Detector Inicial:  {args.detector.upper()}")
     print(f"Painel Web:        {'Desativado (--headless)' if args.headless else f'Ativo em http://0.0.0.0:{args.port}'}")
     print("=" * 72)
 
-    state = AppState()
+    state = AppState(initial_neutral_deg=kinematics.neutral_angle_deg)
     state.op_mode = args.op_mode
     state.front_motor = args.front_motor
     state.detector_type = args.detector
 
     motor_ctrl = MotorController(steps_per_rev=steps_per_rev, apply_offsets_on_init=args.apply_calibration)
     motor_ctrl.set_op_mode(args.op_mode)
-
-    kinematics = HexagonalKinematics3DoF(steps_per_rev=steps_per_rev, front_motor_id=args.front_motor)
 
     max_angle_rad = math.radians(state.max_tilt_deg)
     pid_x = DiscretePID(state.kp, state.ki, state.kd, n_filter=state.n_filter,
@@ -420,10 +424,12 @@ def main():
     except KeyboardInterrupt:
         print("\n[SISTEMA] Encerrando com segurança...")
     finally:
-        if camera: camera.stop()
+        if camera:
+            camera.stop()
         motor_ctrl.stop()
         serial_bridge.close()
-        if cv2 is not None: cv2.destroyAllWindows()
+        if cv2 is not None:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

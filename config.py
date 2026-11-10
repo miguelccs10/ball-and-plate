@@ -88,11 +88,15 @@ DEFAULT_MICROSTEPS = 8               # 8 micropassos = 1600 passos/rev (MS1=MS2=
 DEFAULT_STEP_DELAY_US = 1400         # Meio-período do pulso STEP -> ~350 passos/s
 DEFAULT_INVERT_DIR = [True, False, False]  # M1 invertido por padrão mecânico
 
-# Pinagem pigpio dos TMC2209 no Raspberry Pi 3
+# Pinagem pigpio dos TMC2209 no Raspberry Pi 3 (GPIO / BCM)
+# Conforme pinagem física real documentada no README.md e web/index.html:
+# Motor 1 (0° - Frente)     : DIR: GPIO 17, STEP: GPIO 18, EN: GPIO 27
+# Motor 2 (120° - Trás Dir.): DIR: GPIO 24, STEP: GPIO 23, EN: GPIO 22
+# Motor 3 (240° - Trás Esq.): DIR: GPIO 25, STEP: GPIO 9,  EN: GPIO 10
 PIGPIO_MOTORS = {
-    1: {'en': 17, 'dir': 27, 'step': 22},  # Motor 1 (0°)
-    2: {'en': 23, 'dir': 24, 'step': 25},  # Motor 2 (120°)
-    3: {'en': 5,  'dir': 6,  'step': 13},  # Motor 3 (240°)
+    1: {'dir': 17, 'step': 18, 'en': 27, 'name': 'Motor 1 (0° - Frente)'},
+    2: {'dir': 24, 'step': 23, 'en': 22, 'name': 'Motor 2 (120° - Trás Dir.)'},
+    3: {'dir': 25, 'step': 9,  'en': 10, 'name': 'Motor 3 (240° - Trás Esq.)'},
 }
 
 CALIBRATION_FILE = os.path.join(BASE_DIR, "calibration_offsets.json")

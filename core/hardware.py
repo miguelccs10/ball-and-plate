@@ -9,14 +9,13 @@ Autor: Miguel Carlos Costa Sousa — UFG
 """
 
 import os
-import sys
 import time
 import json
 import struct
 import binascii
 import threading
 from datetime import datetime
-from typing import Tuple, List, Optional, Dict, Any
+from typing import List
 
 try:
     import pigpio
@@ -29,22 +28,38 @@ except ImportError:
     serial = None
 
 import config
+from core.control_math import HexagonalKinematics3DoF
 
 
 # ==============================================================================
-# 1. UTILITÁRIOS DE CALIBRAÇÃO JSON
+# 1. UTILITÁRIOS DE CALIBRAÇÃO JSON (SEM ÂNGULOS HARDCODED)
 # ==============================================================================
-DEFAULT_NOMINAL_NEUTRAL_DEG = 126.73
+def compute_nominal_neutral_deg(steps_per_rev: int = 1600) -> float:
+    """Calcula analiticamente o ângulo neutro nominal a partir da geometria física."""
+    kin = HexagonalKinematics3DoF(steps_per_rev=steps_per_rev)
+    return round(kin.neutral_angle_deg, 2)
 
-def load_calibration(filepath: str = None) -> dict:
-    path = filepath or config.CALIBRATION_FILE
+
+def get_default_calibration_path() -> str:
+    return getattr(
+        config,
+        "CALIBRATION_FILE",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "calibration_offsets.json")
+    )
+
+
+def load_calibration(filepath: str = None, nominal_neutral_deg: float = None) -> dict:
+    path = filepath or get_default_calibration_path()
+    spr_default = 200 * getattr(config, "DEFAULT_MICROSTEPS", 8)
+    nom_deg = nominal_neutral_deg if nominal_neutral_deg is not None else compute_nominal_neutral_deg(spr_default)
+
     default_data = {
         "timestamp": None,
-        "steps_per_rev": 1600,
-        "nominal_neutral_deg": DEFAULT_NOMINAL_NEUTRAL_DEG,
+        "steps_per_rev": spr_default,
+        "nominal_neutral_deg": nom_deg,
         "step_offsets": [0, 0, 0],
         "angle_offsets_deg": [0.0, 0.0, 0.0],
-        "calibrated_neutral_angles_deg": [DEFAULT_NOMINAL_NEUTRAL_DEG] * 3,
+        "calibrated_neutral_angles_deg": [nom_deg] * 3,
         "is_calibrated": False
     }
 
@@ -54,15 +69,13 @@ def load_calibration(filepath: str = None) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        offsets = data.get("step_offsets", [0, 0, 0])
+        offsets = data.get("step_offsets", data.get("offsets_steps", [0, 0, 0]))
         if len(offsets) == 3:
             default_data["step_offsets"] = [int(x) for x in offsets]
-            default_data["is_calibrated"] = data.get("is_calibrated", True)
+            default_data["is_calibrated"] = bool(data.get("is_calibrated", any(default_data["step_offsets"])))
 
-        spr = data.get("steps_per_rev", 1600)
+        spr = int(data.get("steps_per_rev", spr_default))
         default_data["steps_per_rev"] = spr
-        nom_deg = data.get("nominal_neutral_deg", DEFAULT_NOMINAL_NEUTRAL_DEG)
-        default_data["nominal_neutral_deg"] = nom_deg
 
         deg_per_step = 360.0 / float(spr)
         angle_offsets = [s * deg_per_step for s in default_data["step_offsets"]]
@@ -77,9 +90,12 @@ def load_calibration(filepath: str = None) -> dict:
 
 def save_calibration(step_offsets: List[int],
                      steps_per_rev: int = 1600,
-                     nominal_neutral_deg: float = DEFAULT_NOMINAL_NEUTRAL_DEG,
+                     nominal_neutral_deg: float = None,
+                     is_calibrated: bool = True,
                      filepath: str = None) -> bool:
-    path = filepath or config.CALIBRATION_FILE
+    path = filepath or get_default_calibration_path()
+    if nominal_neutral_deg is None:
+        nominal_neutral_deg = compute_nominal_neutral_deg(steps_per_rev)
     try:
         step_offsets = [int(s) for s in step_offsets]
         deg_per_step = 360.0 / float(steps_per_rev)
@@ -87,13 +103,13 @@ def save_calibration(step_offsets: List[int],
         calibrated_angles = [round(nominal_neutral_deg + a, 3) for a in angle_offsets]
 
         payload = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S") if is_calibrated else None,
             "steps_per_rev": int(steps_per_rev),
             "nominal_neutral_deg": float(nominal_neutral_deg),
             "step_offsets": step_offsets,
             "angle_offsets_deg": angle_offsets,
             "calibrated_neutral_angles_deg": calibrated_angles,
-            "is_calibrated": True,
+            "is_calibrated": bool(is_calibrated),
             "description": "Offsets de nivelamento físico dos braços 3-DoF"
         }
 
@@ -112,33 +128,32 @@ def save_calibration(step_offsets: List[int],
 class MotorController:
     """Controlador multieixo para 3 motores de passo NEMA 17 com drivers TMC2209."""
 
-    def __init__(self, steps_per_rev=1600, step_delay_us=1400,
-                 max_excursion_deg=25.0, jog_excursion_deg=90.0,
+    def __init__(self, steps_per_rev=1600, step_delay_us=None,
+                 max_excursion_deg=None, jog_excursion_deg=None,
                  invert_dir=None, apply_offsets_on_init: bool = False):
         self.lock = threading.RLock()
         self.pi = None
-        self.steps_per_rev = steps_per_rev
+        self.steps_per_rev = int(steps_per_rev)
         self.current_steps = [0, 0, 0]
         self.target_steps = [0, 0, 0]
         self.invert_dir = list(invert_dir) if invert_dir is not None else list(config.DEFAULT_INVERT_DIR)
-        self.step_delay_us = int(step_delay_us)
+        self.step_delay_us = int(step_delay_us if step_delay_us is not None else config.DEFAULT_STEP_DELAY_US)
         self.is_enabled = False
         self.running = True
         self.op_mode = config.DEFAULT_OP_MODE
-        self.max_excursion_deg = float(max_excursion_deg)
-        self.jog_excursion_deg = float(jog_excursion_deg)
+
+        self.max_excursion_deg = float(max_excursion_deg if max_excursion_deg is not None else config.MAX_MOTOR_EXCURSION_DEG)
+        self.jog_excursion_deg = float(jog_excursion_deg if jog_excursion_deg is not None else config.MAX_JOG_EXCURSION_DEG)
         self._update_limits()
 
+        # Ângulo neutro obtido analiticamente da cinemática (sem valor bruto)
+        self.nominal_neutral_deg = compute_nominal_neutral_deg(self.steps_per_rev)
         self.calib_offsets = [0, 0, 0]
-        self.nominal_neutral_deg = DEFAULT_NOMINAL_NEUTRAL_DEG
         self.load_calibration_offsets()
 
         self._last_connect_try = 0.0
         self._last_dir = [None, None, None]
         self._dda_acc = [0.0, 0.0, 0.0]
-        self._step_mask_all = 0
-        for cfg in config.PIGPIO_MOTORS.values():
-            self._step_mask_all |= (1 << cfg['step'])
 
         self._apply_offsets_pending = bool(apply_offsets_on_init)
         self.worker = threading.Thread(target=self._motion_worker, name="StepperWorker", daemon=True)
@@ -189,7 +204,7 @@ class MotorController:
                 self.pi.set_mode(cfg['en'], pigpio.OUTPUT)
                 self.pi.set_mode(cfg['dir'], pigpio.OUTPUT)
                 self.pi.set_mode(cfg['step'], pigpio.OUTPUT)
-                self.pi.write(cfg['en'], 1)  # TMC2209 EN ativo baixo -> 1 desativa
+                self.pi.write(cfg['en'], 1)  # TMC2209 EN ativo baixo -> 1 desativa inicialmente
                 self.pi.write(cfg['step'], 0)
 
             self.is_enabled = False
@@ -202,7 +217,7 @@ class MotorController:
     def enable_all(self):
         with self.lock:
             if not self.is_connected():
-                if not self.connect():
+                if not self.connect(force=True):
                     return
             for cfg in config.PIGPIO_MOTORS.values():
                 self.pi.write(cfg['en'], 0)  # Ativo baixo
@@ -258,6 +273,11 @@ class MotorController:
                 targets[idx] = new_val
                 self._set_targets_locked(targets)
 
+    def level(self):
+        """Retorna todos os motores suavemente para a posição neutra calibrada (0, 0, 0)."""
+        with self.lock:
+            self._set_targets_locked([0, 0, 0])
+
     def set_invert_direction(self, motor_index: int, invert: bool):
         with self.lock:
             idx = motor_index - 1
@@ -270,19 +290,20 @@ class MotorController:
             self.step_delay_us = max(400, min(10000, int(delay_us)))
 
     def load_calibration_offsets(self, filepath: str = None) -> dict:
-        data = load_calibration(filepath)
+        data = load_calibration(filepath, nominal_neutral_deg=self.nominal_neutral_deg)
         with self.lock:
             self.calib_offsets = list(data.get("step_offsets", [0, 0, 0]))
-            self.nominal_neutral_deg = float(data.get("nominal_neutral_deg", DEFAULT_NOMINAL_NEUTRAL_DEG))
         return data
 
     def save_current_as_neutral(self, filepath: str = None) -> bool:
+        """Soma os passos atuais aos offsets anteriores, salva no JSON e zera os contadores."""
         with self.lock:
-            new_offsets = [self.calib_offsets[i] + self.current_steps[i] for i in range(3)]
+            new_offsets = [int(self.calib_offsets[i] + self.current_steps[i]) for i in range(3)]
             ok = save_calibration(
                 step_offsets=new_offsets,
                 steps_per_rev=self.steps_per_rev,
                 nominal_neutral_deg=self.nominal_neutral_deg,
+                is_calibrated=True,
                 filepath=filepath
             )
             if ok:
@@ -290,6 +311,35 @@ class MotorController:
                 self.current_steps = [0, 0, 0]
                 self.target_steps = [0, 0, 0]
                 self._dda_acc = [0.0, 0.0, 0.0]
+            return ok
+
+    # Alias para compatibilidade com scripts de calibração anteriores
+    save_current_calibration = save_current_as_neutral
+
+    def zero_calibration(self, save_to_disk: bool = False, filepath: str = None) -> bool:
+        """Define a posição física atual como zero lógico (Tare), salvando opcionalmente em disco."""
+        if save_to_disk:
+            return self.save_current_as_neutral(filepath=filepath)
+        with self.lock:
+            self.current_steps = [0, 0, 0]
+            self.target_steps = [0, 0, 0]
+            self._dda_acc = [0.0, 0.0, 0.0]
+        return True
+
+    def reset_calibration(self, filepath: str = None) -> bool:
+        """Restaura a calibração para o padrão de fábrica ([0, 0, 0]) e limpa o JSON."""
+        with self.lock:
+            ok = save_calibration(
+                step_offsets=[0, 0, 0],
+                steps_per_rev=self.steps_per_rev,
+                nominal_neutral_deg=self.nominal_neutral_deg,
+                is_calibrated=False,
+                filepath=filepath
+            )
+            self.calib_offsets = [0, 0, 0]
+            self.current_steps = [0, 0, 0]
+            self.target_steps = [0, 0, 0]
+            self._dda_acc = [0.0, 0.0, 0.0]
             return ok
 
     def apply_saved_offsets(self, wait: bool = False) -> bool:
@@ -315,6 +365,7 @@ class MotorController:
             return {
                 "current_steps": list(self.current_steps),
                 "target_steps": list(self.target_steps),
+                "calib_offsets": list(self.calib_offsets),
                 "invert_dir": list(self.invert_dir),
                 "step_delay_us": int(self.step_delay_us),
                 "is_enabled": bool(self.is_enabled),
