@@ -104,3 +104,7 @@ PIGPIO_MOTORS = {
 }
 
 CALIBRATION_FILE = os.path.join(BASE_DIR, "calibration_offsets.json")
+VISION_PROFILE_FILE = os.path.join(BASE_DIR, "vision_profile.json")
+CONTROL_PROFILE_FILE = os.path.join(BASE_DIR, "control_profile.json")
+
+

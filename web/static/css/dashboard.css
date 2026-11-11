@@ -998,3 +998,45 @@ input:checked + .slider-toggle:before {
 .pinout-table td {
   background: rgba(0, 0, 0, 0.2);
 }
+
+/* ==============================================================================
+ * NOVOS COMPONENTES: TABELA DE ATUADORES & CONTROLES DE BANCADA (R3)
+ * ============================================================================== */
+.text-cyan { color: var(--accent-cyan) !important; }
+.text-emerald { color: var(--accent-emerald) !important; }
+.text-rose { color: var(--accent-rose) !important; }
+
+.btn-outline-cyan {
+  background: transparent;
+  border: 1px solid var(--accent-cyan);
+  color: var(--accent-cyan);
+  cursor: pointer;
+}
+
+.btn-outline-cyan:hover {
+  background: rgba(0, 240, 255, 0.15);
+}
+
+.actuator-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+}
+
+.actuator-table th, .actuator-table td {
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  text-align: left;
+}
+
+.actuator-table th {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.actuator-table td {
+  background: rgba(0, 0, 0, 0.25);
+}
+

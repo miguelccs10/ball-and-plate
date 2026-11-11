@@ -705,6 +705,129 @@ function updateAutoButton(mode) {
   }
 }
 
+// ==============================================================================
+// CONTROLES DE ATUADORES, JOG E CALIBRAÇÃO DE BANCADA (R3)
+// ==============================================================================
+function jogSelected(steps) {
+  const sel = document.getElementById('sel-jog-motor');
+  const motor = sel ? parseInt(sel.value, 10) : 0;
+  return sendAction('jog', { motor: motor, steps: steps });
+}
+
+function jogCustomSteps() {
+  const sel = document.getElementById('sel-jog-motor');
+  const motor = sel ? parseInt(sel.value, 10) : 0;
+  const inp = document.getElementById('inp-custom-steps');
+  const steps = inp ? (parseInt(inp.value, 10) || 0) : 0;
+  return sendAction('jog', { motor: motor, steps: steps });
+}
+
+function jogCustomDegrees() {
+  const sel = document.getElementById('sel-jog-motor');
+  const motor = sel ? parseInt(sel.value, 10) : 0;
+  const inp = document.getElementById('inp-custom-deg');
+  const deg = inp ? (parseFloat(inp.value) || 0.0) : 0.0;
+  return sendAction('jog', { motor: motor, deg: deg });
+}
+
+function saveNeutralPosition() {
+  return sendAction('save_neutral')
+    .then(res => res.json())
+    .then(data => {
+      console.log('Neutro salvo com sucesso:', data);
+    })
+    .catch(err => console.error('Erro ao salvar neutro:', err));
+}
+
+function resetCalibration() {
+  return sendAction('reset_calibration')
+    .then(res => res.json())
+    .then(data => {
+      console.log('Calibração resetada com sucesso:', data);
+    })
+    .catch(err => console.error('Erro ao resetar calibração:', err));
+}
+
+function testRepeatability() {
+  return sendAction('test_repeatability')
+    .catch(err => console.error('Erro ao testar repetibilidade:', err));
+}
+
+function startBenchTest(testType, params = {}) {
+  return sendAction('bench_start', { test: testType, params: params })
+    .catch(err => console.error('Erro ao iniciar teste de bancada:', err));
+}
+
+function startBenchTrajectory() {
+  const sel = document.getElementById('sel-bench-trajectory');
+  const traj = sel ? sel.value : 'circle';
+  return startBenchTest('trajectory', { trajectory: traj, radius_deg: 6.0 });
+}
+
+function startBenchDiagnostics() {
+  const sel = document.getElementById('sel-bench-diag-motor');
+  const motor = sel ? parseInt(sel.value, 10) : 0;
+  return startBenchTest('diagnostics', { motor: motor });
+}
+
+function stopBenchTest() {
+  return sendAction('bench_stop')
+    .catch(err => console.error('Erro ao parar teste de bancada:', err));
+}
+
+function saveVisionProfile() {
+  return sendAction('save_vision_profile')
+    .then(res => res.json())
+    .then(data => {
+      const st = document.getElementById('vision-profile-status');
+      if (st) {
+        st.innerText = 'Perfil visual salvo com sucesso no JSON!';
+        setTimeout(() => { st.innerText = 'Salva homografia, geometria, HSV e crop em JSON'; }, 3000);
+      }
+    })
+    .catch(err => console.error('Erro ao salvar perfil visual:', err));
+}
+
+function loadVisionProfile() {
+  return sendAction('load_vision_profile')
+    .then(res => res.json())
+    .then(data => {
+      const st = document.getElementById('vision-profile-status');
+      if (st) {
+        st.innerText = 'Perfil visual recarregado com sucesso!';
+        setTimeout(() => { st.innerText = 'Salva homografia, geometria, HSV e crop em JSON'; }, 3000);
+      }
+    })
+    .catch(err => console.error('Erro ao recarregar perfil visual:', err));
+}
+
+function saveControlProfile() {
+  return sendAction('save_control_profile')
+    .then(res => res.json())
+    .then(data => {
+      const st = document.getElementById('control-profile-status');
+      if (st) {
+        st.innerText = 'Ganhos de controle salvos com sucesso no JSON!';
+        setTimeout(() => { st.innerText = 'Salva parâmetros PID, setpoints e Kalman em JSON'; }, 3000);
+      }
+    })
+    .catch(err => console.error('Erro ao salvar perfil de controle:', err));
+}
+
+function loadControlProfile() {
+  return sendAction('load_control_profile')
+    .then(res => res.json())
+    .then(data => {
+      const st = document.getElementById('control-profile-status');
+      if (st) {
+        st.innerText = 'Ganhos de controle recarregados com sucesso!';
+        setTimeout(() => { st.innerText = 'Salva parâmetros PID, setpoints e Kalman em JSON'; }, 3000);
+      }
+    })
+    .catch(err => console.error('Erro ao recarregar perfil de controle:', err));
+}
+
+
 setInterval(() => {
   fetch('/api/telemetry')
     .then(res => res.json())
@@ -800,7 +923,74 @@ setInterval(() => {
       if (hwTx) hwTx.innerText = data.uart_packets_sent;
       if (hwFail) hwFail.innerText = data.uart_packets_failed;
 
-      // 6. Renderização do Osciloscópio
+      // 6. Tabela de Telemetria Completa dos Atuadores (R2/R3)
+      if (data.motor_steps && data.calib_offsets && data.motor_angles_deg) {
+        for (let i = 1; i <= 3; i++) {
+          const idx = i - 1;
+          const relEl = document.getElementById('act-rel-' + i);
+          const offEl = document.getElementById('act-off-' + i);
+          const absEl = document.getElementById('act-abs-' + i);
+          const angEl = document.getElementById('act-ang-' + i);
+          const gpioEl = document.getElementById('act-gpio-' + i);
+
+          const rel = data.motor_steps[idx] || 0;
+          const off = data.calib_offsets[idx] || 0;
+          const totalSteps = rel + off;
+          const ang = typeof data.motor_angles_deg[idx] === 'number'
+            ? data.motor_angles_deg[idx].toFixed(2) + '°'
+            : '—';
+
+          if (relEl) relEl.innerText = rel;
+          if (offEl) offEl.innerText = off;
+          if (absEl) absEl.innerText = totalSteps;
+          if (angEl) angEl.innerText = ang;
+
+          if (gpioEl && data.gpio_pins && data.gpio_pins[String(i)]) {
+            const p = data.gpio_pins[String(i)];
+            gpioEl.innerText = 'D:' + p.dir + ' S:' + p.step + ' E:' + p.en;
+          }
+        }
+
+        const badgeCalib = document.getElementById('badge-calib-status');
+        const badgeCalibTxt = document.getElementById('badge-calib-txt');
+        if (badgeCalib && badgeCalibTxt) {
+          if (data.is_calibrated) {
+            badgeCalib.className = 'status-pill status-live';
+            badgeCalibTxt.innerText = 'CALIBRADO (' + data.calib_offsets.join(', ') + ')';
+          } else {
+            badgeCalib.className = 'status-pill status-warn';
+            badgeCalibTxt.innerText = 'PADRÃO (0, 0, 0)';
+          }
+        }
+
+        const lblNom = document.getElementById('lbl-nominal-neutral');
+        if (lblNom && typeof data.nominal_neutral_deg === 'number') {
+          lblNom.innerText = data.nominal_neutral_deg.toFixed(2) + '°';
+        }
+
+        const lblTime = document.getElementById('lbl-calib-timestamp');
+        if (lblTime) {
+          lblTime.innerText = data.timestamp || 'Sem registro';
+        }
+      }
+
+      // 7. Status da Suíte de Bancada (Bench Suite)
+      if (data.bench_status) {
+        const bs = data.bench_status;
+        const msgEl = document.getElementById('bench-status-msg');
+        const txtEl = document.getElementById('bench-progress-txt');
+        const barEl = document.getElementById('bench-progress-bar');
+        const badgeRunning = document.getElementById('bench-badge-running');
+
+        if (msgEl) msgEl.innerText = 'Status: ' + (bs.message || 'Pronto');
+        if (txtEl) txtEl.innerText = (bs.progress || 0) + '%';
+        if (barEl) barEl.style.width = (bs.progress || 0) + '%';
+        if (badgeRunning) {
+          badgeRunning.style.display = bs.running ? 'inline-flex' : 'none';
+        }
+      }
+
+      // 8. Renderização do Osciloscópio
       if (data.history) {
         renderOscilloscope(data.history);
       }

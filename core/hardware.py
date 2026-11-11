@@ -29,6 +29,7 @@ except ImportError:
 
 import config
 from core.control_math import HexagonalKinematics3DoF
+from core.persistence import atomic_write_json, load_json_safe
 
 
 # ==============================================================================
@@ -63,12 +64,11 @@ def load_calibration(filepath: str = None, nominal_neutral_deg: float = None) ->
         "is_calibrated": False
     }
 
-    if not os.path.isfile(path):
+    if not path or not os.path.isfile(path):
         return default_data
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_json_safe(path, default_data)
         offsets = data.get("step_offsets", data.get("offsets_steps", [0, 0, 0]))
         if len(offsets) == 3:
             default_data["step_offsets"] = [int(x) for x in offsets]
@@ -113,10 +113,7 @@ def save_calibration(step_offsets: List[int],
             "description": "Offsets de nivelamento físico dos braços 3-DoF"
         }
 
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        return True
+        return atomic_write_json(path, payload)
     except Exception as e:
         print(f"[CALIBRAÇÃO] Erro ao gravar {path}: {e}")
         return False
@@ -149,6 +146,8 @@ class MotorController:
         # Ângulo neutro obtido analiticamente da cinemática (sem valor bruto)
         self.nominal_neutral_deg = compute_nominal_neutral_deg(self.steps_per_rev)
         self.calib_offsets = [0, 0, 0]
+        self.calib_timestamp = None
+        self.is_calibrated = False
         self.load_calibration_offsets()
 
         self._last_connect_try = 0.0
@@ -293,6 +292,8 @@ class MotorController:
         data = load_calibration(filepath, nominal_neutral_deg=self.nominal_neutral_deg)
         with self.lock:
             self.calib_offsets = list(data.get("step_offsets", [0, 0, 0]))
+            self.calib_timestamp = data.get("timestamp")
+            self.is_calibrated = bool(data.get("is_calibrated", any(self.calib_offsets)))
         return data
 
     def save_current_as_neutral(self, filepath: str = None) -> bool:
@@ -311,6 +312,8 @@ class MotorController:
                 self.current_steps = [0, 0, 0]
                 self.target_steps = [0, 0, 0]
                 self._dda_acc = [0.0, 0.0, 0.0]
+                self.is_calibrated = any(self.calib_offsets)
+                self.calib_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             return ok
 
     # Alias para compatibilidade com scripts de calibração anteriores
@@ -340,6 +343,8 @@ class MotorController:
             self.current_steps = [0, 0, 0]
             self.target_steps = [0, 0, 0]
             self._dda_acc = [0.0, 0.0, 0.0]
+            self.is_calibrated = False
+            self.calib_timestamp = None
             return ok
 
     def apply_saved_offsets(self, wait: bool = False) -> bool:
@@ -362,10 +367,24 @@ class MotorController:
 
     def get_telemetry_snapshot(self) -> dict:
         with self.lock:
+            deg_per_step = 360.0 / float(self.steps_per_rev)
+            calibrated_neutral_angles = [
+                round(self.nominal_neutral_deg + (off * deg_per_step), 3)
+                for off in self.calib_offsets
+            ]
+            motor_angles = [
+                round(self.nominal_neutral_deg + ((self.calib_offsets[i] + self.current_steps[i]) * deg_per_step), 2)
+                for i in range(3)
+            ]
             return {
                 "current_steps": list(self.current_steps),
                 "target_steps": list(self.target_steps),
                 "calib_offsets": list(self.calib_offsets),
+                "nominal_neutral_deg": float(self.nominal_neutral_deg),
+                "calibrated_neutral_angles_deg": calibrated_neutral_angles,
+                "motor_angles_deg": motor_angles,
+                "is_calibrated": bool(self.is_calibrated),
+                "timestamp": self.calib_timestamp,
                 "invert_dir": list(self.invert_dir),
                 "step_delay_us": int(self.step_delay_us),
                 "is_enabled": bool(self.is_enabled),

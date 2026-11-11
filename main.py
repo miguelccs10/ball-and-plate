@@ -8,6 +8,7 @@ Autor: Miguel Carlos Costa Sousa — UFG
 ==============================================================================
 """
 
+import sys
 import time
 import math
 import argparse
@@ -36,6 +37,7 @@ from core.vision import (
 )
 from core.control_math import DiscreteKalman2D, DiscretePID, HexagonalKinematics3DoF
 from core.hardware import MotorController, SerialBridge
+from tools.bench_suite import run_interactive_calibration
 from web.server import DashboardServerContext, run_dashboard_server
 
 
@@ -65,6 +67,13 @@ class AppState:
         self.plate_pitch_deg = 0.0
         self.plate_roll_deg = 0.0
         self.motor_angles_deg = [round(initial_neutral_deg, 2)] * 3
+
+        # Campos de calibração física e sincronização (R1 / R2 / Telemetria)
+        self.calib_offsets = [0, 0, 0]
+        self.nominal_neutral_deg = float(initial_neutral_deg)
+        self.calibrated_neutral_angles_deg = [round(initial_neutral_deg, 3)] * 3
+        self.is_calibrated = False
+        self.calib_timestamp = None
 
         self.kp = config.PID_DEFAULT_KP
         self.ki = config.PID_DEFAULT_KI
@@ -365,7 +374,7 @@ def vision_loop(camera: Optional[CameraStream], detector_ref, serial_b: Optional
 
 
 # ==============================================================================
-# MAIN ENTRYPOINT
+# MAIN ENTRYPOINT & CICLO DE VIDA TRIFÁSICO (R1)
 # ==============================================================================
 def parse_args():
     parser = argparse.ArgumentParser(description="Sistema Ball and Plate 3-DoF (RPi 3 / STM32)")
@@ -378,8 +387,14 @@ def parse_args():
                         help="Modo de operação: STANDALONE_RPI ou HYBRID_STM32")
     parser.add_argument("--microsteps", type=int, default=config.DEFAULT_MICROSTEPS, help="Micropassos TMC2209")
     parser.add_argument("--front-motor", type=int, choices=[1, 2, 3], default=config.MOTOR_FRONT_ID, help="ID motor frontal")
-    parser.add_argument("--apply-calibration", action="store_true", help="Aplica offsets de calibração fisicamente ao iniciar")
-    parser.add_argument("--headless", action="store_true", help="Executa sem interface web HTTP")
+    parser.add_argument("--apply-calibration", dest="apply_calibration", action="store_true", default=True,
+                        help="Aplica offsets de calibração fisicamente ao iniciar (padrão: True)")
+    parser.add_argument("--no-calibration", dest="apply_calibration", action="store_false",
+                        help="Não aplica offsets de calibração ao iniciar")
+    parser.add_argument("--skip-cli", action="store_true", default=False,
+                        help="Pula rotina CLI interativa pré-servidor e inicia diretamente")
+    parser.add_argument("--headless", action="store_true", default=False,
+                        help="Executa sem interface web HTTP e sem CLI interativa")
     parser.add_argument("--preview", action="store_true", help="Exibe janela OpenCV local de visualização")
     return parser.parse_args()
 
@@ -391,13 +406,14 @@ def main():
     kinematics = HexagonalKinematics3DoF(steps_per_rev=steps_per_rev, front_motor_id=args.front_motor)
 
     print("=" * 72)
-    print("INICIANDO SISTEMA BALL AND PLATE 3-DoF")
-    print(f"Modo Operacional:  {args.op_mode}")
-    print(f"Motor Frontal:     Motor {args.front_motor}")
-    print(f"Ângulo Neutro:     {kinematics.neutral_angle_deg:.2f}° (calculado da geometria)")
-    print(f"Resolução:         {steps_per_rev} passos/rev ({args.microsteps} micropassos)")
-    print(f"Detector Inicial:  {args.detector.upper()}")
-    print(f"Painel Web:        {'Desativado (--headless)' if args.headless else f'Ativo em http://0.0.0.0:{args.port}'}")
+    print("INICIANDO SISTEMA BALL AND PLATE 3-DoF — ORQUESTRADOR CENTRAL")
+    print(f"Modo Operacional:    {args.op_mode}")
+    print(f"Motor Frontal:       Motor {args.front_motor}")
+    print(f"Ângulo Neutro:       {kinematics.neutral_angle_deg:.2f}° (calculado da geometria)")
+    print(f"Resolução:           {steps_per_rev} passos/rev ({args.microsteps} micropassos)")
+    print(f"Detector Inicial:    {args.detector.upper()}")
+    print(f"Calibração Inicial:  {'Aplicar Offsets' if args.apply_calibration else 'Offsets Ignorados (--no-calibration)'}")
+    print(f"Painel Web:          {'Desativado (--headless)' if args.headless else f'Ativo em http://0.0.0.0:{args.port}'}")
     print("=" * 72)
 
     state = AppState(initial_neutral_deg=kinematics.neutral_angle_deg)
@@ -405,9 +421,76 @@ def main():
     state.front_motor = args.front_motor
     state.detector_type = args.detector
 
-    motor_ctrl = MotorController(steps_per_rev=steps_per_rev, apply_offsets_on_init=args.apply_calibration)
+    # Instanciação do controlador de motores (despacho explícito gerenciado pela Fase 2)
+    motor_ctrl = MotorController(steps_per_rev=steps_per_rev, apply_offsets_on_init=False)
     motor_ctrl.set_op_mode(args.op_mode)
 
+    # =========================================================================
+    # FASE 1: CLI PRÉ-SERVIDOR (Calibração Interativa / Verificação via Terminal)
+    # =========================================================================
+    is_interactive = (not args.skip_cli) and (not args.headless) and sys.stdin.isatty()
+    if is_interactive:
+        print("\n[FASE 1] Iniciando rotina interativa de calibração via terminal...")
+        run_interactive_calibration(motor_ctrl)
+    else:
+        print("\n[FASE 1] CLI interativa ignorada (--skip-cli, --headless ou ambiente não interativo).")
+
+    # =========================================================================
+    # FASE 2: PERSISTÊNCIA & HARDWARE (Barreira de Prontidão, AprilTag e AppState)
+    # =========================================================================
+    print("\n[FASE 2] Sincronizando persistência, aplicando calibração e verificando estabilidade...")
+    calib_data = motor_ctrl.load_calibration_offsets()
+
+    if args.apply_calibration:
+        print(f"[FASE 2] Aplicando offsets de calibração salvos: {motor_ctrl.calib_offsets}...")
+        motor_ctrl.apply_saved_offsets(wait=True)
+    else:
+        print("[FASE 2] Nivelamento sem aplicação de offsets (--no-calibration)...")
+        motor_ctrl.level()
+
+    # Barreira de prontidão (Readiness Barrier)
+    hardware_idle = motor_ctrl.wait_until_idle(timeout=5.0)
+    if not hardware_idle:
+        print("[FASE 2] ⚠️ Aviso: Timeout aguardando estabilização dos atuadores.")
+    else:
+        print("[FASE 2] ✓ Barreira de prontidão concluída: Hardware em repouso e nivelado.")
+
+    # Inicialização da Câmera
+    camera = None
+    if cv2 is not None:
+        try:
+            camera = CameraStream(src=args.camera, width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT, fps=config.TARGET_FPS)
+            camera.start()
+            print("[CAMERA] Stream de captura ativo.")
+        except Exception as e:
+            print(f"[CAMERA] Aviso: Câmera física não disponível ({e}).")
+            camera = None
+
+    # Calibração AprilTag com placa fisicamente nivelada
+    calibrator = AprilTagCalibrator()
+    if camera:
+        print("[FASE 2] Executando calibração AprilTag com placa nivelada...")
+        frame, _, _ = camera.wait_for_frame(-1, timeout=0.5)
+        if frame is not None:
+            calibrator.calibrate_from_frame(frame)
+            if calibrator.is_calibrated:
+                print(f"[FASE 2] ✓ AprilTag calibrado com sucesso ({calibrator.tags_detected}/4 tags detectadas).")
+
+    # Hidratação Completa do AppState a partir do MotorController e Calibrador
+    snap = motor_ctrl.get_telemetry_snapshot()
+    with state.lock:
+        state.calib_offsets = list(snap["calib_offsets"])
+        state.nominal_neutral_deg = snap["nominal_neutral_deg"]
+        state.calibrated_neutral_angles_deg = list(snap["calibrated_neutral_angles_deg"])
+        state.motor_angles_deg = list(snap["motor_angles_deg"])
+        state.is_calibrated = snap["is_calibrated"]
+        state.calib_timestamp = snap["timestamp"]
+        state.tag_calibrated = calibrator.is_calibrated
+        state.tags_detected = calibrator.tags_detected
+        state.cam_tilt_deg = calibrator.estimated_cam_tilt_deg
+        state.request_tag_calib = not calibrator.is_calibrated
+
+    # Configuração dos controladores PID e Filtro de Kalman
     max_angle_rad = math.radians(state.max_tilt_deg)
     pid_x = DiscretePID(state.kp, state.ki, state.kd, n_filter=state.n_filter,
                         out_min=-max_angle_rad, out_max=max_angle_rad, ts=0.033, reverse_acting=True)
@@ -421,23 +504,13 @@ def main():
         latency_sec=state.kalman_latency_ms / 1000.0
     )
 
-    # Calibrador AprilTag
-    calibrator = AprilTagCalibrator()
-
-    # Inicializa Câmera
-    camera = None
-    if cv2 is not None:
-        try:
-            camera = CameraStream(src=args.camera, width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT, fps=config.TARGET_FPS)
-            camera.start()
-            print("[CAMERA] Stream de captura ativo.")
-        except Exception as e:
-            print(f"[CAMERA] Aviso: Câmera física não disponível ({e}).")
-            camera = None
-
-    # Detector Visual Otimizado HSV
     detector_hsv = create_detector("hsv", hsv_lower=config.HSV_LOWER, hsv_upper=config.HSV_UPPER)
     active_detector = {"instance": detector_hsv}
+
+    # =========================================================================
+    # FASE 3: DAEMON & SERVIÇOS (UART STM32, Servidor Web e Loop de Visão)
+    # =========================================================================
+    print("\n[FASE 3] Iniciando serviços de comunicação e controle...")
 
     # Comunicação Serial UART com STM32
     serial_bridge = SerialBridge(port=args.serial_port, baudrate=args.baud, mock_mode=False)
@@ -445,9 +518,9 @@ def main():
         serial_bridge.send_system_command(4, args.front_motor)
         serial_bridge.send_setpoint(state.setpoint_x_mm, state.setpoint_y_mm)
 
-    # Inicia Servidor Web se não for headless
+    web_server = None
     if not args.headless:
-        server_ctx_kwargs = dict(
+        server_ctx = DashboardServerContext(
             state=state,
             motor_ctrl=motor_ctrl,
             kinematics=kinematics,
@@ -455,14 +528,9 @@ def main():
             pid_y=pid_y,
             kalman=kalman,
             serial_bridge=serial_bridge,
-            on_detector_change=None
+            on_detector_change=None,
+            calibrator=calibrator
         )
-        try:
-            server_ctx = DashboardServerContext(**server_ctx_kwargs, calibrator=calibrator)
-        except TypeError:
-            server_ctx = DashboardServerContext(**server_ctx_kwargs)
-            setattr(server_ctx, "calibrator", calibrator)
-
         web_server = run_dashboard_server("0.0.0.0", args.port, server_ctx)
         server_thread = threading.Thread(target=web_server.serve_forever, daemon=True)
         server_thread.start()
@@ -488,6 +556,11 @@ def main():
     finally:
         if camera:
             camera.stop()
+        if web_server:
+            try:
+                web_server.shutdown()
+            except Exception:
+                pass
         motor_ctrl.stop()
         serial_bridge.close()
         if cv2 is not None:

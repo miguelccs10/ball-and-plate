@@ -165,7 +165,7 @@
           </button>
           <button class="tab-nav-btn" id="btn-tab-motors" onclick="switchTab('tab-motors')">
             <span class="tab-icon">📐</span>
-            <span>Atuadores</span>
+            <span>Atuadores & Bancada</span>
           </button>
           <button class="tab-nav-btn" id="btn-tab-roi" onclick="switchTab('tab-roi')">
             <span class="tab-icon">✂️</span>
@@ -284,6 +284,18 @@
                 <label for="num-rmeas">Ruído Câmera R (mm²)</label>
                 <input type="number" id="num-rmeas" step="0.5" min="0.1" max="25.0" value="2.25" onchange="updateKalmanSettings()">
               </div>
+            </div>
+          </div>
+
+          <!-- PERSISTÊNCIA DOS GANHOS DE CONTROLE (R3) -->
+          <div class="profile-persist-box" style="margin-top:14px; padding:10px 14px; background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); border-radius:var(--radius-md); display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <span style="font-size:0.8rem; font-weight:700; color:var(--text-main); display:block;">Persistência dos Ganhos de Controle</span>
+              <span id="control-profile-status" style="font-size:0.7rem; color:var(--text-dim);">Salva parâmetros PID, setpoints e Kalman em JSON</span>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-sm btn-emerald" id="btn-save-control-profile" onclick="saveControlProfile()">💾 Salvar Ganhos</button>
+              <button class="btn btn-sm btn-outline-cyan" id="btn-load-control-profile" onclick="loadControlProfile()">🔄 Recarregar</button>
             </div>
           </div>
         </div>
@@ -419,18 +431,206 @@
               <label class="check-label"><input type="checkbox" id="chk-swap-xy" onchange="updateOrientationSettings()"> Trocar X &lt;-&gt; Y</label>
             </div>
           </div>
+
+          <!-- PERSISTÊNCIA DO PERFIL VISUAL (R2 / R3) -->
+          <div class="profile-persist-box" style="margin-top:14px; padding:10px 14px; background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); border-radius:var(--radius-md); display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <span style="font-size:0.8rem; font-weight:700; color:var(--text-main); display:block;">Persistência do Perfil Visual</span>
+              <span id="vision-profile-status" style="font-size:0.7rem; color:var(--text-dim);">Salva homografia, geometria, HSV e crop em JSON</span>
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-sm btn-emerald" id="btn-save-vision-profile" onclick="saveVisionProfile()">💾 Salvar Perfil</button>
+              <button class="btn btn-sm btn-outline-cyan" id="btn-load-vision-profile" onclick="loadVisionProfile()">🔄 Recarregar</button>
+            </div>
+          </div>
         </div>
 
         <!-- ================================================================ -->
-        <!-- ABA 3: CONTROLE MANUAL & ATUADORES DE PASSO                      -->
+        <!-- ABA 3: ATUADORES, CALIBRAÇÃO & SUÍTE DE TESTES DE BANCADA (R3)    -->
         <!-- ================================================================ -->
         <div class="tab-content" id="tab-motors">
           <div class="section-title-group">
-            <h3 class="section-heading">Controle Manual de Inclinação e Atuação</h3>
-            <p class="section-subtext">Comando direto dos 3 motores de passo NEMA 17 com drivers TMC2209:</p>
+            <h3 class="section-heading">Atuadores & Testes de Bancada</h3>
+            <p class="section-subtext">Telemetria física dos TMC2209, alinhamento micrométrico e testes integrados:</p>
           </div>
 
-          <!-- NOVO: TRAVA DE TORQUE / ENERGIZAÇÃO EM STANDBY -->
+          <!-- 1. TABELA DE TELEMETRIA COMPLETA DOS ATUADORES (R2/R3) -->
+          <div class="actuator-table-container" style="margin-bottom: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-weight: 700; font-size: 0.85rem; color: var(--accent-cyan);">Telemetria dos Motores TMC2209</span>
+              <span class="status-pill status-warn" id="badge-calib-status">
+                <span class="pulse-dot"></span>
+                <span id="badge-calib-txt">PADRÃO (0,0,0)</span>
+              </span>
+            </div>
+            <table class="actuator-table pinout-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Atuador</th>
+                  <th>Pinos GPIO</th>
+                  <th>Passo Rel.</th>
+                  <th>Offset Salvo</th>
+                  <th>Passo Absoluto</th>
+                  <th>Ângulo Total</th>
+                </tr>
+              </thead>
+              <tbody id="actuator-table-body">
+                <tr id="act-row-1">
+                  <td>M1</td>
+                  <td>Motor 1 (Frente 0°)</td>
+                  <td class="font-mono" id="act-gpio-1">D:17 S:18 E:27</td>
+                  <td class="font-mono" id="act-rel-1">0</td>
+                  <td class="font-mono text-cyan" id="act-off-1">0</td>
+                  <td class="font-mono" id="act-abs-1">0</td>
+                  <td class="font-mono text-emerald" id="act-ang-1">126.73°</td>
+                </tr>
+                <tr id="act-row-2">
+                  <td>M2</td>
+                  <td>Motor 2 (Trás Dir. 120°)</td>
+                  <td class="font-mono" id="act-gpio-2">D:24 S:23 E:22</td>
+                  <td class="font-mono" id="act-rel-2">0</td>
+                  <td class="font-mono text-cyan" id="act-off-2">0</td>
+                  <td class="font-mono" id="act-abs-2">0</td>
+                  <td class="font-mono text-emerald" id="act-ang-2">126.73°</td>
+                </tr>
+                <tr id="act-row-3">
+                  <td>M3</td>
+                  <td>Motor 3 (Trás Esq. 240°)</td>
+                  <td class="font-mono" id="act-gpio-3">D:25 S:9 E:10</td>
+                  <td class="font-mono" id="act-rel-3">0</td>
+                  <td class="font-mono text-cyan" id="act-off-3">0</td>
+                  <td class="font-mono" id="act-abs-3">0</td>
+                  <td class="font-mono text-emerald" id="act-ang-3">126.73°</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="display:flex; justify-content:space-between; margin-top:6px; font-size:0.72rem; color:var(--text-dim);">
+              <span>Neutro Nominal: <strong id="lbl-nominal-neutral" class="font-mono text-cyan">126.73°</strong></span>
+              <span>Última Calibração: <strong id="lbl-calib-timestamp" class="font-mono text-emerald">—</strong></span>
+            </div>
+          </div>
+
+          <!-- 2. MATRIZ DE JOG & CONTROLES PASSO A PASSO (R3) -->
+          <div class="jog-matrix-card" style="padding:12px; background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); border-radius:var(--radius-md); margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <span style="font-weight:700; font-size:0.82rem; color:var(--text-main);">Matriz de Jog Manual & Passo a Passo</span>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <span style="font-size:0.75rem; color:var(--text-dim);">Alvo:</span>
+                <select id="sel-jog-motor" class="select-box" style="padding:3px 8px; font-size:0.75rem;">
+                  <option value="1">Motor 1 (Frente)</option>
+                  <option value="2">Motor 2 (Trás Dir.)</option>
+                  <option value="3">Motor 3 (Trás Esq.)</option>
+                  <option value="0" selected>TODOS SIMULTANEAMENTE</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Botões Fino / Médio / Grosso -->
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; margin-bottom:10px;">
+              <div style="display:flex; flex-direction:column; gap:4px; text-align:center;">
+                <span style="font-size:0.7rem; color:var(--text-dim); text-transform:uppercase;">Fino (±1 passo / ~0.22°)</span>
+                <div style="display:flex; gap:4px;">
+                  <button class="btn btn-sm btn-cyan" style="flex:1;" onclick="jogSelected(-1)">-1</button>
+                  <button class="btn btn-sm btn-cyan" style="flex:1;" onclick="jogSelected(+1)">+1</button>
+                </div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px; text-align:center;">
+                <span style="font-size:0.7rem; color:var(--text-dim); text-transform:uppercase;">Médio (±5 passos / ~1.13°)</span>
+                <div style="display:flex; gap:4px;">
+                  <button class="btn btn-sm btn-cyan" style="flex:1;" onclick="jogSelected(-5)">-5</button>
+                  <button class="btn btn-sm btn-cyan" style="flex:1;" onclick="jogSelected(+5)">+5</button>
+                </div>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px; text-align:center;">
+                <span style="font-size:0.7rem; color:var(--text-dim); text-transform:uppercase;">Grosso (±20 passos / ~4.50°)</span>
+                <div style="display:flex; gap:4px;">
+                  <button class="btn btn-sm btn-cyan" style="flex:1;" onclick="jogSelected(-20)">-20</button>
+                  <button class="btn btn-sm btn-cyan" style="flex:1;" onclick="jogSelected(+20)">+20</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Entradas Customizadas de Passos e Graus -->
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div style="display:flex; gap:4px; align-items:center;">
+                <input type="number" id="inp-custom-steps" placeholder="± Passos" class="input-dark font-mono" style="width:90px; padding:4px 6px; font-size:0.78rem;" value="40">
+                <button class="btn btn-sm btn-outline-cyan" onclick="jogCustomSteps()">Enviar Passos</button>
+              </div>
+              <div style="display:flex; gap:4px; align-items:center;">
+                <input type="number" id="inp-custom-deg" step="0.5" placeholder="± Graus" class="input-dark font-mono" style="width:90px; padding:4px 6px; font-size:0.78rem;" value="2.0">
+                <button class="btn btn-sm btn-outline-cyan" onclick="jogCustomDegrees()">Enviar Graus</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. CONTROLES DE CALIBRAÇÃO PERMANENTE (R3) -->
+          <div class="calib-actions-card" style="padding:12px; background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); border-radius:var(--radius-md); margin-bottom:14px;">
+            <span style="font-weight:700; font-size:0.82rem; color:var(--text-main); display:block; margin-bottom:8px;">Ações de Calibração Permanente</span>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+              <button class="btn btn-sm btn-emerald" id="btn-save-neutral" onclick="saveNeutralPosition()">💾 Salvar Neutro no JSON</button>
+              <button class="btn btn-sm btn-rose" id="btn-reset-calib" onclick="resetCalibration()">🔄 Resetar Calibração (Fábrica)</button>
+              <button class="btn btn-sm btn-cyan" id="btn-test-repeat" onclick="testRepeatability()">🧪 Testar Repetibilidade</button>
+              <button class="btn btn-sm btn-amber" id="btn-level-platform" onclick="levelPlatform()">📐 Nivelar ao Neutro</button>
+            </div>
+          </div>
+
+          <!-- 4. SUÍTE DE TESTES ASSÍNCRONOS DE BANCADA (BENCH SUITE) (R3) -->
+          <div class="bench-suite-card" style="padding:12px; background:rgba(0,240,255,0.02); border:1px solid rgba(0,240,255,0.2); border-radius:var(--radius-md); margin-bottom:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <span style="font-weight:700; font-size:0.84rem; color:var(--accent-cyan);">Suíte de Testes de Bancada (Bench Suite)</span>
+              <span id="bench-badge-running" class="status-pill status-warn" style="display:none;">Executando</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; margin-bottom:12px;">
+              <!-- Teste 1: Amplitude Cardeal -->
+              <div style="padding:8px; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+                <span style="font-size:0.75rem; font-weight:700; display:block; margin-bottom:4px;">Amplitude Cardeal (±12°)</span>
+                <p style="font-size:0.68rem; color:var(--text-dim); margin-bottom:6px;">11 waypoints sequenciais (Pitch, Roll, Diagonais)</p>
+                <button class="btn btn-sm btn-cyan" id="btn-bench-cardinal" style="width:100%;" onclick="startBenchTest('cardinal')">Iniciar Cardeal</button>
+              </div>
+
+              <!-- Teste 2: Trajetórias -->
+              <div style="padding:8px; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+                <span style="font-size:0.75rem; font-weight:700; display:block; margin-bottom:4px;">Trajetórias Programadas</span>
+                <select id="sel-bench-trajectory" class="select-box" style="width:100%; padding:3px 6px; font-size:0.72rem; margin-bottom:6px;">
+                  <option value="circle">Círculo Contínuo (R=6°)</option>
+                  <option value="triangle">Triângulo (3 vértices)</option>
+                  <option value="square">Quadrado (4 vértices)</option>
+                  <option value="figure8">Figura-8 (Lissajous)</option>
+                </select>
+                <button class="btn btn-sm btn-cyan" id="btn-bench-trajectory" style="width:100%;" onclick="startBenchTrajectory()">Iniciar Trajetória</button>
+              </div>
+
+              <!-- Teste 3: Diagnostico GPIO -->
+              <div style="padding:8px; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+                <span style="font-size:0.75rem; font-weight:700; display:block; margin-bottom:4px;">Diagnóstico Linhas GPIO</span>
+                <select id="sel-bench-diag-motor" class="select-box" style="width:100%; padding:3px 6px; font-size:0.72rem; margin-bottom:6px;">
+                  <option value="0">Todos os Motores</option>
+                  <option value="1">Motor 1 (Frente)</option>
+                  <option value="2">Motor 2 (Trás Dir.)</option>
+                  <option value="3">Motor 3 (Trás Esq.)</option>
+                </select>
+                <button class="btn btn-sm btn-cyan" id="btn-bench-diagnostics" style="width:100%;" onclick="startBenchDiagnostics()">Testar Linhas GPIO</button>
+              </div>
+            </div>
+
+            <!-- Barra de Progresso e Cancelamento -->
+            <div id="bench-progress-panel" style="padding:8px 10px; background:rgba(0,0,0,0.3); border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+              <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:4px;">
+                <span id="bench-status-msg" style="color:var(--text-main);">Status: Pronto</span>
+                <span id="bench-progress-txt" class="font-mono text-cyan">0%</span>
+              </div>
+              <div class="bench-progress-track" style="height:8px; background:rgba(255,255,255,0.08); border-radius:4px; overflow:hidden; margin-bottom:8px;">
+                <div id="bench-progress-bar" style="width:0%; height:100%; background:linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald)); transition:width 0.2s ease;"></div>
+              </div>
+              <div style="text-align:right;">
+                <button class="btn btn-sm btn-rose" id="btn-bench-stop" onclick="stopBenchTest()">🛑 Cancelar / Abortar Teste</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5. TRAVA DE TORQUE / ENERGIZAÇÃO EM STANDBY -->
           <div class="torque-control-box" style="margin-bottom:10px; padding:10px 14px; background:rgba(0,240,255,0.04); border:1px solid rgba(0,240,255,0.2); border-radius:var(--radius-md); display:flex; align-items:center; justify-content:space-between;">
             <div>
               <span style="font-size:0.8rem; font-weight:700; color:var(--accent-cyan); display:block;">Trava de Torque em Standby (Bobinas Energizadas)</span>
@@ -474,31 +674,6 @@
               <label class="check-label"><input type="checkbox" id="chk-inv-2" onchange="toggleInvertMotor(2, this.checked)"> Inverter M2 (120°)</label>
               <label class="check-label"><input type="checkbox" id="chk-inv-3" onchange="toggleInvertMotor(3, this.checked)"> Inverter M3 (240°)</label>
             </div>
-          </div>
-
-          <!-- Jog Individual de Micropassos -->
-          <div class="jog-section">
-            <span class="jog-title">Passo a Passo Individual por Motor:</span>
-            <div class="jog-row">
-              <span class="motor-tag">Motor 1</span>
-              <button class="btn btn-sm btn-cyan" onclick="jogMotor(1, -40)">-40 Passos</button>
-              <button class="btn btn-sm btn-cyan" onclick="jogMotor(1, +40)">+40 Passos</button>
-            </div>
-            <div class="jog-row">
-              <span class="motor-tag">Motor 2</span>
-              <button class="btn btn-sm btn-cyan" onclick="jogMotor(2, -40)">-40 Passos</button>
-              <button class="btn btn-sm btn-cyan" onclick="jogMotor(2, +40)">+40 Passos</button>
-            </div>
-            <div class="jog-row">
-              <span class="motor-tag">Motor 3</span>
-              <button class="btn btn-sm btn-cyan" onclick="jogMotor(3, -40)">-40 Passos</button>
-              <button class="btn btn-sm btn-cyan" onclick="jogMotor(3, +40)">+40 Passos</button>
-            </div>
-          </div>
-
-          <div class="btn-group-horizontal" style="margin-top:12px;">
-            <button class="btn btn-amber" onclick="levelPlatform()">Nivelar ao Neutro (0, 0, 0)</button>
-            <button class="btn btn-rose" onclick="tareZeroPosition()">Calibrar Atual como Zero (Tare)</button>
           </div>
         </div>
 

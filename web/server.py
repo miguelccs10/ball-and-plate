@@ -15,7 +15,16 @@ import math
 import time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+import config
+from core.persistence import (
+    atomic_write_json,
+    load_json_safe,
+    save_vision_profile,
+    load_vision_profile,
+)
+from web.bench_runner import BenchRunner
 
 WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(WEB_DIR, "static")
@@ -67,7 +76,7 @@ def _safe_hsv_triplet(val, default_triplet):
 
 
 class DashboardServerContext:
-    def __init__(self, state, motor_ctrl, kinematics, pid_x, pid_y, kalman, serial_bridge=None, on_detector_change=None, calibrator=None):
+    def __init__(self, state, motor_ctrl, kinematics, pid_x, pid_y, kalman, serial_bridge=None, on_detector_change=None, calibrator=None, bench_runner=None):
         self.state = state
         self.motor_ctrl = motor_ctrl
         self.kinematics = kinematics
@@ -77,6 +86,7 @@ class DashboardServerContext:
         self.serial_bridge = serial_bridge
         self.on_detector_change = on_detector_change
         self.calibrator = calibrator
+        self.bench_runner = bench_runner if bench_runner is not None else BenchRunner(motor_ctrl, kinematics)
 
 
 class ThreadedServer(ThreadingHTTPServer):
@@ -156,7 +166,9 @@ def create_handler(context: DashboardServerContext):
                 try:
                     while True:
                         with state.frame_cond:
-                            state.frame_cond.wait_for(lambda: state.jpeg_seq != last_seq)
+                            got_frame = state.frame_cond.wait_for(lambda: state.jpeg_seq != last_seq, timeout=0.5)
+                            if not got_frame:
+                                continue
                             jpeg_bytes = state.latest_jpeg
                             last_seq = state.jpeg_seq
 
@@ -179,6 +191,14 @@ def create_handler(context: DashboardServerContext):
                 self.end_headers()
 
                 motor_snap = motor_ctrl.get_telemetry_snapshot()
+                bench_status = context.bench_runner.get_status() if hasattr(context, "bench_runner") and context.bench_runner else {
+                    "running": False, "test": "", "progress": 0, "message": "Inativo"
+                }
+                gpio_pins = {
+                    str(k): {"dir": v["dir"], "step": v["step"], "en": v["en"], "name": v["name"]}
+                    for k, v in getattr(config, "PIGPIO_MOTORS", {}).items()
+                }
+
                 with state.lock:
                     hist_sample = list(state.history)[-40:] if hasattr(state, "history") else []
                     tel = {
@@ -201,6 +221,16 @@ def create_handler(context: DashboardServerContext):
                         "op_mode": state.op_mode,
                         "invert": motor_snap["invert_dir"],
                         "step_delay_us": motor_snap["step_delay_us"],
+                        # 6 Campos Obrigatórios de Calibração (R2 / Aceite)
+                        "calib_offsets": motor_snap.get("calib_offsets", [0, 0, 0]),
+                        "nominal_neutral_deg": motor_snap.get("nominal_neutral_deg", getattr(motor_ctrl, "nominal_neutral_deg", 126.73)),
+                        "calibrated_neutral_angles_deg": motor_snap.get("calibrated_neutral_angles_deg", [getattr(motor_ctrl, "nominal_neutral_deg", 126.73)] * 3),
+                        "motor_angles_deg": motor_snap.get("motor_angles_deg", [round(getattr(motor_ctrl, "nominal_neutral_deg", 126.73), 2)] * 3),
+                        "is_calibrated": motor_snap.get("is_calibrated", False),
+                        "timestamp": motor_snap.get("timestamp"),
+                        # Bench status e GPIO pinout
+                        "bench_status": bench_status,
+                        "gpio_pins": gpio_pins,
                         "detector": getattr(state, "detector_type", "hsv"),
                         # Orientação geométrica
                         "cam_rotation": getattr(state, "cam_rotation", 0),
@@ -271,9 +301,11 @@ def create_handler(context: DashboardServerContext):
 
             # Rota Unificada 2: POST /api/action
             elif parsed.path == "/api/action" or parsed.path in [
-                "/api/level", "/api/zero", "/api/reset_calibration",
-                "/api/jog_motor", "/api/manual_tilt", "/api/torque", "/api/preset",
-                "/api/calibrate_apriltag", "/api/reset_apriltag"
+                "/api/level", "/api/zero", "/api/save_neutral", "/api/reset_calibration",
+                "/api/jog_motor", "/api/jog", "/api/manual_tilt", "/api/torque", "/api/preset",
+                "/api/calibrate_apriltag", "/api/reset_apriltag", "/api/test_repeatability",
+                "/api/bench_start", "/api/bench_stop", "/api/save_vision_profile",
+                "/api/load_vision_profile", "/api/save_control_profile", "/api/load_control_profile"
             ]:
                 self._handle_action(data, parsed.path)
                 self._send_json_ok()
@@ -403,13 +435,21 @@ def create_handler(context: DashboardServerContext):
             if not action:
                 if path == "/api/level": action = "level"
                 elif path == "/api/zero": action = "zero"
+                elif path == "/api/save_neutral": action = "save_neutral"
                 elif path == "/api/reset_calibration": action = "reset_calibration"
-                elif path == "/api/jog_motor": action = "jog"
+                elif path in ("/api/jog_motor", "/api/jog"): action = "jog"
                 elif path == "/api/manual_tilt": action = "manual_tilt"
                 elif path == "/api/torque": action = "torque"
                 elif path == "/api/preset": action = "preset"
                 elif path == "/api/calibrate_apriltag": action = "calibrate_apriltag"
                 elif path == "/api/reset_apriltag": action = "reset_apriltag"
+                elif path == "/api/test_repeatability": action = "test_repeatability"
+                elif path == "/api/bench_start": action = "bench_start"
+                elif path == "/api/bench_stop": action = "bench_stop"
+                elif path == "/api/save_vision_profile": action = "save_vision_profile"
+                elif path == "/api/load_vision_profile": action = "load_vision_profile"
+                elif path == "/api/save_control_profile": action = "save_control_profile"
+                elif path == "/api/load_control_profile": action = "load_control_profile"
 
             if action == "level":
                 with state.lock:
@@ -430,32 +470,197 @@ def create_handler(context: DashboardServerContext):
                     motor_ctrl.zero_calibration(save_to_disk=save_disk)
                 elif state.op_mode == "HYBRID_STM32" and ser_b:
                     ser_b.send_system_command(3)
+                snap = motor_ctrl.get_telemetry_snapshot()
                 with state.lock:
                     state.plate_pitch_deg = 0.0
                     state.plate_roll_deg = 0.0
                     state.motor_angles_deg = [round(kinematics.neutral_angle_deg, 2)] * 3
+                    state.calib_offsets = list(snap["calib_offsets"])
+                    state.nominal_neutral_deg = snap["nominal_neutral_deg"]
+                    state.calibrated_neutral_angles_deg = list(snap["calibrated_neutral_angles_deg"])
+                    state.is_calibrated = snap["is_calibrated"]
+                    state.calib_timestamp = snap["timestamp"]
                     pid_x.reset()
                     pid_y.reset()
                     if kalman: kalman.reset()
 
+            elif action == "save_neutral":
+                if state.op_mode == "STANDALONE_RPI":
+                    motor_ctrl.save_current_as_neutral()
+                snap = motor_ctrl.get_telemetry_snapshot()
+                with state.lock:
+                    state.calib_offsets = list(snap["calib_offsets"])
+                    state.nominal_neutral_deg = snap["nominal_neutral_deg"]
+                    state.calibrated_neutral_angles_deg = list(snap["calibrated_neutral_angles_deg"])
+                    state.motor_angles_deg = list(snap["motor_angles_deg"])
+                    state.is_calibrated = snap["is_calibrated"]
+                    state.calib_timestamp = snap["timestamp"]
+
             elif action == "reset_calibration":
                 if state.op_mode == "STANDALONE_RPI":
                     motor_ctrl.reset_calibration()
+                snap = motor_ctrl.get_telemetry_snapshot()
                 with state.lock:
                     state.plate_pitch_deg = 0.0
                     state.plate_roll_deg = 0.0
                     state.motor_angles_deg = [round(kinematics.neutral_angle_deg, 2)] * 3
+                    state.calib_offsets = list(snap["calib_offsets"])
+                    state.nominal_neutral_deg = snap["nominal_neutral_deg"]
+                    state.calibrated_neutral_angles_deg = list(snap["calibrated_neutral_angles_deg"])
+                    state.is_calibrated = snap["is_calibrated"]
+                    state.calib_timestamp = snap["timestamp"]
                     pid_x.reset()
                     pid_y.reset()
                     if kalman: kalman.reset()
-                    
+
             elif action == "jog":
-                motor_id = _safe_int(data.get("motor", 1), 1, 1, 3)
-                delta_steps = _safe_int(data.get("steps", 0), 0, -2000, 2000)
+                motor_id_raw = data.get("motor", 1)
+                if str(motor_id_raw).lower() in ("0", "all", "todos"):
+                    targets = (1, 2, 3)
+                else:
+                    targets = (_safe_int(motor_id_raw, 1, 1, 3),)
+
+                if "deg" in data:
+                    delta_deg = _safe_float(data["deg"], 0.0, -90.0, 90.0)
+                    steps_per_deg = motor_ctrl.steps_per_rev / 360.0
+                    delta_steps = int(round(delta_deg * steps_per_deg))
+                else:
+                    delta_steps = _safe_int(data.get("steps", 0), 0, -5000, 5000)
+
                 with state.lock:
                     state.mode = "MANUAL_MOTOR"
                 if state.op_mode == "STANDALONE_RPI":
-                    motor_ctrl.jog(motor_id, delta_steps)
+                    for m in targets:
+                        motor_ctrl.jog(m, delta_steps)
+
+            elif action == "test_repeatability":
+                if hasattr(context, "bench_runner") and context.bench_runner:
+                    context.bench_runner.start_test("repeatability")
+
+            elif action == "bench_start":
+                test_type = data.get("test", "cardinal")
+                params = data.get("params", data)
+                if hasattr(context, "bench_runner") and context.bench_runner:
+                    context.bench_runner.start_test(test_type, params)
+
+            elif action == "bench_stop":
+                if hasattr(context, "bench_runner") and context.bench_runner:
+                    context.bench_runner.stop()
+
+            elif action == "save_vision_profile":
+                filepath = getattr(config, "VISION_PROFILE_FILE", os.path.join(getattr(config, "BASE_DIR", "."), "vision_profile.json"))
+                with state.lock:
+                    homography_matrix = None
+                    if hasattr(context, "calibrator") and context.calibrator is not None and getattr(context.calibrator, "is_calibrated", False):
+                        H = getattr(context.calibrator, "H", None)
+                        if H is not None:
+                            homography_matrix = H.tolist() if hasattr(H, "tolist") else list(H)
+
+                    profile = {
+                        "cam_height_mm": getattr(state, "cam_height_mm", 450.0),
+                        "cam_rotation": getattr(state, "cam_rotation", 0),
+                        "invert_x": getattr(state, "invert_x", False),
+                        "invert_y": getattr(state, "invert_y", False),
+                        "swap_xy": getattr(state, "swap_xy", False),
+                        "front_motor": getattr(state, "front_motor", 3),
+                        "crop": {
+                            "x": getattr(state, "crop_x", 0),
+                            "y": getattr(state, "crop_y", 0),
+                            "w": getattr(state, "crop_w", 320),
+                            "h": getattr(state, "crop_h", 240)
+                        },
+                        "hsv_lower": list(state.hsv_lower),
+                        "hsv_upper": list(state.hsv_upper),
+                        "blur_size": getattr(state, "blur_size", 5),
+                        "min_radius": getattr(state, "min_radius", 4),
+                        "max_radius": getattr(state, "max_radius", 40),
+                        "apriltag": {
+                            "is_calibrated": getattr(state, "tag_calibrated", False),
+                            "tags_detected": getattr(state, "tags_detected", 0),
+                            "cam_tilt_deg": getattr(state, "cam_tilt_deg", 0.0),
+                            "homography_matrix": homography_matrix
+                        }
+                    }
+                save_vision_profile(filepath, profile)
+
+            elif action == "load_vision_profile":
+                filepath = getattr(config, "VISION_PROFILE_FILE", os.path.join(getattr(config, "BASE_DIR", "."), "vision_profile.json"))
+                profile = load_vision_profile(filepath)
+                if profile:
+                    with state.lock:
+                        if "cam_height_mm" in profile: state.cam_height_mm = float(profile["cam_height_mm"])
+                        if "cam_rotation" in profile: state.cam_rotation = int(profile["cam_rotation"])
+                        if "invert_x" in profile: state.invert_x = bool(profile["invert_x"])
+                        if "invert_y" in profile: state.invert_y = bool(profile["invert_y"])
+                        if "swap_xy" in profile: state.swap_xy = bool(profile["swap_xy"])
+                        if "front_motor" in profile: state.front_motor = int(profile["front_motor"])
+                        crop = profile.get("crop", {})
+                        if crop:
+                            state.crop_x = int(crop.get("x", state.crop_x))
+                            state.crop_y = int(crop.get("y", state.crop_y))
+                            state.crop_w = int(crop.get("w", state.crop_w))
+                            state.crop_h = int(crop.get("h", state.crop_h))
+                        if "hsv_lower" in profile: state.hsv_lower = list(profile["hsv_lower"])
+                        if "hsv_upper" in profile: state.hsv_upper = list(profile["hsv_upper"])
+                        if "blur_size" in profile: state.blur_size = int(profile["blur_size"])
+                        if "min_radius" in profile: state.min_radius = int(profile["min_radius"])
+                        if "max_radius" in profile: state.max_radius = int(profile["max_radius"])
+                        apriltag_info = profile.get("apriltag", {})
+                        if apriltag_info:
+                            state.tag_calibrated = bool(apriltag_info.get("is_calibrated", False))
+                            state.tags_detected = int(apriltag_info.get("tags_detected", 0))
+                            state.cam_tilt_deg = float(apriltag_info.get("cam_tilt_deg", 0.0))
+                            H_mat = apriltag_info.get("homography_matrix")
+                            if H_mat is not None and hasattr(context, "calibrator") and context.calibrator is not None:
+                                try:
+                                    import numpy as np
+                                    H_np = np.array(H_mat, dtype=np.float64)
+                                    context.calibrator.H = H_np
+                                    context.calibrator.H_inv = np.linalg.inv(H_np)
+                                    context.calibrator.is_calibrated = True
+                                    context.calibrator.tags_detected = state.tags_detected
+                                    context.calibrator.estimated_cam_tilt_deg = state.cam_tilt_deg
+                                except Exception as e:
+                                    print(f"[VISION] Erro ao restaurar homografia: {e}")
+
+            elif action == "save_control_profile":
+                filepath = getattr(config, "CONTROL_PROFILE_FILE", os.path.join(getattr(config, "BASE_DIR", "."), "control_profile.json"))
+                with state.lock:
+                    ctrl_data = {
+                        "kp": state.kp,
+                        "ki": state.ki,
+                        "kd": state.kd,
+                        "n": state.n_filter,
+                        "sp_x": state.setpoint_x_mm,
+                        "sp_y": state.setpoint_y_mm,
+                        "q_accel": getattr(state, "kalman_q_accel", 0.05),
+                        "r_meas": getattr(state, "kalman_r_meas", 2.25e-6),
+                        "latency_ms": getattr(state, "kalman_latency_ms", 30.0),
+                        "use_kalman": getattr(state, "use_kalman", True)
+                    }
+                atomic_write_json(filepath, ctrl_data)
+
+            elif action == "load_control_profile":
+                filepath = getattr(config, "CONTROL_PROFILE_FILE", os.path.join(getattr(config, "BASE_DIR", "."), "control_profile.json"))
+                ctrl_data = load_json_safe(filepath)
+                if ctrl_data:
+                    with state.lock:
+                        if "kp" in ctrl_data: state.kp = float(ctrl_data["kp"])
+                        if "ki" in ctrl_data: state.ki = float(ctrl_data["ki"])
+                        if "kd" in ctrl_data: state.kd = float(ctrl_data["kd"])
+                        if "n" in ctrl_data: state.n_filter = float(ctrl_data["n"])
+                        if "sp_x" in ctrl_data: state.setpoint_x_mm = float(ctrl_data["sp_x"])
+                        if "sp_y" in ctrl_data: state.setpoint_y_mm = float(ctrl_data["sp_y"])
+                        if "q_accel" in ctrl_data: state.kalman_q_accel = float(ctrl_data["q_accel"])
+                        if "r_meas" in ctrl_data: state.kalman_r_meas = float(ctrl_data["r_meas"])
+                        if "latency_ms" in ctrl_data: state.kalman_latency_ms = float(ctrl_data["latency_ms"])
+                        if "use_kalman" in ctrl_data: state.use_kalman = bool(ctrl_data["use_kalman"])
+                        pid_x.set_gains(kp=state.kp, ki=state.ki, kd=state.kd, n_filter=state.n_filter)
+                        pid_y.set_gains(kp=state.kp, ki=state.ki, kd=state.kd, n_filter=state.n_filter)
+                        if kalman:
+                            kalman.q_accel = state.kalman_q_accel
+                            kalman.r_meas = state.kalman_r_meas
+                            kalman.latency_sec = state.kalman_latency_ms / 1000.0
 
             elif action == "manual_tilt":
                 with state.lock:
